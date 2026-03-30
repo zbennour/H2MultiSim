@@ -7,7 +7,7 @@
 # - Geological Monte Carlo (porosity, permeability, thickness variability)
 # - Complete cycle analysis (cushion gas fill, injection/withdrawal cycles)
 
-#Everything is implemented with Python standard library only. This is not a design tool – it's a didactic, easily hackable prototype.
+#Everything is implemented with Python standard library only. This is not a design tool, it's a didactic, easily hackable prototype.
 
 # ---------------------------------------------------------------------------
 # Initiation
