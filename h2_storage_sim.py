@@ -611,7 +611,7 @@ def run_single_realization_demo():
 
     print("Single realization results:")
     for k, v in result.metrics.items():
-        print(f"  {k}: {v: .3e}")
+        print(f"  {k}: {v:.3e}")
 
     # Print last state
     print(f"Final time [days]: {result.times[-1] / 86400.0: .2f}")
@@ -652,12 +652,12 @@ def run_monte_carlo_demo():
     print("\nMonte Carlo ensemble statistics (20 realizations):")
     for name, st in stats.items():
         print(f"\nMetric: {name}")
-        print(f"  mean: {st['mean']: .3e}")
-        print(f"  min : {st['min']:  .3e}")
-        print(f"  p10 : {st['p10']:  .3e}")
-        print(f"  p50 : {st['p50']:  .3e}")
-        print(f"  p90 : {st['p90']:  .3e}")
-        print(f"  max : {st['max']:  .3e}")
+        print(f"  mean: {st['mean']:.3e}")
+        print(f"  min : {st['min']:.3e}")
+        print(f"  p10 : {st['p10']:.3e}")
+        print(f"  p50 : {st['p50']:.3e}")
+        print(f"  p90 : {st['p90']:.3e}")
+        print(f"  max : {st['max']:.3e}")
 
 
 if __name__ == "__main__":
