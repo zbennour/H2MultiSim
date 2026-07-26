@@ -1,0 +1,85 @@
+================================================================================
+  KEY IMPROVEMENTS OF h2_store_sim (v1.3).py OVER h2_store_sim (v1.2)
+================================================================================
+
+--------------------------------------------------------------------------------
+  FEATURE               h2_store_sim (v1.2)       h2_store_sim (v1.3)
+--------------------------------------------------------------------------------
+
+  EOS Solver            Newton-Raphson            Analytical cubic
+                        (iterative, can fail)     (exact, never fails)
+
+  Viscosity             Fixed user input          Computed from P and T
+                        (never changes)           (updates every time step)
+
+  Adsorption            Not present               Langmuir and DSL isotherm
+                        (no sorbent physics)      (full adsorption model)
+
+  Fugacity              Not present               Full PR fugacity
+                        (raw pressure used)       (correct at high pressure)
+
+  Pore Volume Models    Exponential only          Rigid, elastic, breathing
+                        (one model)               (three models)
+
+  Time Integrator       Euler — 1st order         Runge-Kutta — 4th order
+                        (less accurate)           (more accurate)
+
+  Storage Types         2 types                   3 types
+                        (void + porous rock)      (adds sorbent storage)
+
+  Scenarios             3 scenarios               4 scenarios
+                        (cavern, 2x reservoir)    (adds MOF cryogenic vessel)
+
+  Monte Carlo           Gaussian sampling         Lognormal sampling
+  Sampling              (can give negatives)      (always positive, realistic)
+
+  Phase Labels          Not present               Full phase column in CSV
+  in CSV                (no period tracking)      (each row tagged by period)
+
+  Dependencies          None                      None
+                        (pure Python)             (pure Python)
+
+--------------------------------------------------------------------------------
+  NOTES
+--------------------------------------------------------------------------------
+
+  - All improvements are backward compatible. Existing h2_store_sim (v1.2) scenarios
+    (Teesside cavern, Okoroafor reservoir, Rough field) produce equivalent
+    results in h2_store_sim (v1.3) because adsorption terms evaluate to zero
+    when no sorbent material is present (m_sorbent = 0).
+
+  - The analytical cubic EOS solver uses the Viete/Cardano method (1545).
+    It computes the exact root in one pass with no iteration, so it cannot
+    diverge or return a silent wrong answer as Newton-Raphson can.
+
+  - Lognormal Monte Carlo sampling is more physically realistic for geological
+    parameters (porosity, permeability, thickness) because these quantities
+    are always positive and naturally skewed in nature.
+
+  - The 4th-order Runge-Kutta integrator has error proportional to dt^4,
+    compared to dt^1 for Euler. This means larger time steps can be used
+    while maintaining the same accuracy, keeping run time comparable to
+    h2_store_sim (v1.2) despite doing more physics per step.
+
+  - Notation in h2_store_sim (v1.3) has been aligned with h2_store_sim (v1.2) where
+    equivalent variables exist (e.g. R_u, T_c, P_c, omega, a_c, b,
+    kappa, aT, K_to_C, K_to_F, PI_vol, delta_p, bhp,
+    total_compressibility, log10_perm_mean, geothermal_T_mean).
+
+
+================================================================================
+  HOW TO RUN THE FINAL VERSION
+================================================================================
+
+  1. Make sure Python 3.8 or newer is installed
+     Check by typing:   python --version
+
+  2. Save h2_store_sim (v1.3).py anywhere on your computer
+
+  3. Open a terminal or command prompt in that folder
+
+  4. Type:   python h2_store_sim (v1.3).py
+
+  5. Results appear on screen and CSV files are saved to h2store_output/
+
+================================================================================
