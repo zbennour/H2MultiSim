@@ -52,6 +52,10 @@ packages = ["src/h2multisim"]
 [tool.ruff]
 target-version = "py39"
 line-length = 100
+exclude = [
+    "h2_*.py",
+    "legacy",
+]
 
 [tool.ruff.lint]
 select = [
