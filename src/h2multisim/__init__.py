@@ -1,10 +1,12 @@
 """
-H2MultiSim™
-===========
+H2MultiSim
+==========
 Open-source, dependency-free Python toolkit for multi-scale simulation of
 underground hydrogen storage (UHS) across 0D, 1D, 2D, and 3D scales.
 
-Author: Ziad Bennour (Subterranean Synergy / Curtin University)
+Authors:
+- Ziad Bennour (Subterranean Synergy / Curtin University)
+- kwkushan (Author of foundational V1.3 analytical EOS and single-cell prototype)
 License: GPL-3.0-or-later
 """
 
