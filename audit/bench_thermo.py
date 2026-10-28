@@ -9,6 +9,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from h2multisim.thermo import (  # noqa: E402
     PengRobinsonH2,
     cp_ideal_h2,
+    cp_real_h2,
     gamma_real_h2,
     joule_thomson_coefficient,
     viscosity_h2,
@@ -16,9 +17,18 @@ from h2multisim.thermo import (  # noqa: E402
 
 FLUID = "Hydrogen"
 eos = PengRobinsonH2()
+eos_pen = PengRobinsonH2(volume_translation=-4.0e-6)
 
 def ref(prop, T, P):
     return CP.PropsSI(prop, "T", T, "P", P, FLUID)
+
+
+def ref_jt(T, P):
+    dP = 1e3
+    h_hi = CP.PropsSI("Hmass", "T", T, "P", P + dP, FLUID)
+    h_lo = CP.PropsSI("Hmass", "T", T, "P", P - dP, FLUID)
+    cp = CP.PropsSI("Cpmass", "T", T, "P", P, FLUID)
+    return -(h_hi - h_lo) / (2.0 * dP) / cp * 1e5
 
 
 def table(name, cases, fn_model, fn_ref, unit="", rel=True):
@@ -63,9 +73,9 @@ table(
     lambda T, P: ref("Cpmass", T, P) * 2.01594e-3,
 )
 table(
-    "Real-gas cp [J/kg/K] (not implemented; Cp0 only)",
+    "Real-gas cp [J/kg/K] (PR departure)",
     [(316.0, 80), (316.0, 120), (350.0, 250)],
-    lambda T, P: cp_ideal_h2(T) / 2.01594e-3,
+    lambda T, P: cp_real_h2(T, P, eos) / 2.01594e-3,
     lambda T, P: ref("Cpmass", T, P),
 )
 table(
@@ -81,10 +91,11 @@ table(
     lambda T, P: ref("Cpmass", T, P) / ref("Cvmass", T, P),
 )
 table(
-    "Joule-Thomson [K/bar]",
+    "Joule-Thomson [K/bar] (Peneloux c = -4.0e-6)",
     [(293.15, 1), (293.15, 100), (316.0, 80), (350.0, 250), (400.0, 300)],
-    lambda T, P: joule_thomson_coefficient(T, P, eos) * 1e5,
-    lambda T, P: ref("Joule-Thomson coefficient", T, P) * 1e5,
+    lambda T, P: joule_thomson_coefficient(T, P, eos_pen) * 1e5,
+    lambda T, P: ref_jt(T, P),
+    rel=False,
 )
 
 print("\n\n## B. The repository's own 'NIST' Z table vs CoolProp")

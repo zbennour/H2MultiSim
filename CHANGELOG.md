@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.0 — Unreleased
+
+### Thermodynamics & Accuracy
+- Integrated Peneloux volume translation across all model tiers (0D, 1D, 2D, 3D) and config loaders (`peneloux=True` or `volume_translation=-4.0e-6`), reducing peak PR-EOS Z-factor error from 4.16% to <0.85% across 1–350 bar.
+- Added Muzny et al. (2013) / NIST density-dependent dense-fluid residual correction to `viscosity_h2`, reducing high-pressure viscosity error from 9.2% down to <1.5% across 250–450 K and 1–350 bar.
+- Added `cp_real_h2` and `cp_specific_real_h2` evaluating real-gas isobaric heat capacity via Peng-Robinson enthalpy departure.
+- Resolved analytical Joule-Thomson coefficient formulation via $T(\partial V/\partial T)_P - V = (R T^2/P)(\partial Z/\partial T) + c$, eliminating numerical cancellation and restoring exact physical negative sign and magnitude.
+- Expanded validation test suite to 33 test suites (29 subtests).
+
 ## v1.0.1 — 2026-10-28
 
 Correctness release. No public class names were removed; several result dictionaries

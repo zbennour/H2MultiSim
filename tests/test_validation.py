@@ -48,6 +48,7 @@ from h2multisim.thermo import (
     R_UNIVERSAL,
     PengRobinsonH2,
     adiabatic_temperature,
+    cp_real_h2,
     gamma_real_h2,
     joule_thomson_coefficient,
     thermal_relaxation_update,
@@ -132,6 +133,14 @@ class TestH2MultiSimValidation(unittest.TestCase):
         # CoolProp 8.0.0: 9.676 uPa.s at 333 K / 82 bar (Hogeweg point).
         mu_hog = viscosity_h2(333.0, 82e5)
         self.assertLess(abs(mu_hog - 9.676e-6) / 9.676e-6, 0.02)
+
+        # High pressure (250 bar at 293.15 K): CoolProp = 9.302 uPa.s
+        mu_hp = viscosity_h2(293.15, 250e5)
+        self.assertLess(abs(mu_hp - 9.302e-6) / 9.302e-6, 0.02)
+
+        # High temperature & high pressure (350 K at 250 bar): CoolProp = 10.304 uPa.s
+        mu_hthp = viscosity_h2(350.0, 250e5)
+        self.assertLess(abs(mu_hthp - 10.304e-6) / 10.304e-6, 0.02)
 
     # ── 6. Heat Capacity Ratio Gamma vs CoolProp ─────────────────────────────
     def test_06_gamma_bounds(self) -> None:
@@ -473,6 +482,26 @@ class TestH2MultiSimValidation(unittest.TestCase):
                 rho = eos.density(P, T)
                 rho_ref = P * 2.01594e-3 / (Z_ref * R_UNIVERSAL * T)
                 self.assertLess(abs(rho - rho_ref) / rho_ref, 0.015)
+
+        # Propagates from ReservoirProperties to model instance
+        props = build_teesside_cavern()
+        props.peneloux = True
+        props.__post_init__()
+        sim = UHSReservoir0D(props)
+        self.assertEqual(sim.eos.volume_translation, -4.0e-6)
+
+    # ── 33. Real-Gas Heat Capacity and Joule-Thomson Consistency ───────────
+    def test_33_real_gas_cp_and_joule_thomson(self) -> None:
+        # Real cp departs by <3% from ideal at 250 bar (CoolProp = 14769 J/kg/K)
+        cp_250 = cp_real_h2(350.0, 250e5, self.eos) / 2.01594e-3
+        self.assertLess(abs(cp_250 - 14769.0) / 14769.0, 0.04)
+
+        # Joule-Thomson coefficient with Peneloux must be negative at 100 bar, 293 K
+        # Reference CoolProp is -0.0347 K/bar (-3.47e-7 K/Pa)
+        eos_pen = PengRobinsonH2(volume_translation=-4.0e-6)
+        jt_100 = joule_thomson_coefficient(293.15, 100e5, eos_pen)
+        self.assertLess(jt_100, 0.0)
+        self.assertLess(abs(jt_100 - (-3.47e-7)), 1.5e-7)
 
     # ── 25. Teesside cavern: exact mass balance and pressure envelope ───────
     def test_25_teesside_cavern_mass_balance(self) -> None:

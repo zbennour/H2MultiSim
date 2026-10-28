@@ -87,6 +87,10 @@ def _props_0d(d: dict[str, Any]) -> ReservoirProperties:
         is_cavern=bool(d.get("is_cavern", False)),
         n_wells=int(d.get("n_wells", 1)),
         m_sorbent=float(d.get("m_sorbent", 0.0)),
+        volume_translation=float(
+            d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
+        ),
+        peneloux=bool(d.get("peneloux", False)),
     )
 
 
@@ -103,6 +107,10 @@ def _props_1d(d: dict[str, Any]) -> RadialReservoirProps:
         skin=float(d.get("skin", 0.0)),
         outer_bc=str(d.get("outer_bc", "no_flow")),
         tau_days=float(d.get("tau_days", 30.0)),
+        volume_translation=float(
+            d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
+        ),
+        peneloux=bool(d.get("peneloux", False)),
     )
 
 
@@ -119,6 +127,10 @@ def _props_2d(d: dict[str, Any]) -> Reservoir2DProps:
         nx=int(d["nx"]),
         ny=int(d["ny"]),
         tau_days=float(d.get("tau_days", 30.0)),
+        volume_translation=float(
+            d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
+        ),
+        peneloux=bool(d.get("peneloux", False)),
     )
 
 
@@ -136,6 +148,10 @@ def _props_3d(d: dict[str, Any]) -> Reservoir3DProps:
         ny=int(d["ny"]),
         nz=int(d["nz"]),
         tau_days=float(d.get("tau_days", 30.0)),
+        volume_translation=float(
+            d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
+        ),
+        peneloux=bool(d.get("peneloux", False)),
     )
 
 
