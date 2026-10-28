@@ -173,69 +173,118 @@ class UHSReservoir0D:
         PI_single = 2.0 * math.pi * k * h / (mu * max(ln_re_rw, 1e-3))
         return PI_single * self.props.n_wells
 
-    def _mass_rate(self, state: ReservoirState, period: SchedulePeriod) -> float:
+    def _mass_rate_at(self, P: float, T: float, period: SchedulePeriod) -> float:
+        """Signed well mass rate [kg/s] at pressure P and temperature T."""
         if period.mode == "shut_in":
             return 0.0
 
         PI = self._productivity_index()
-        rho = self.eos.density(state.pressure, state.temperature)
+        rho = self.eos.density(P, T)
         bhp = period.bhp_target
         qmax = period.max_mass_rate
 
         if period.mode == "inject":
-            dp = max(bhp - state.pressure, 0.0)
-            q_vol = PI * dp
-            q_kg = min(q_vol * rho, qmax)
+            dp = max(bhp - P, 0.0)
+            q_kg = min(PI * dp * rho, qmax)
             return max(q_kg, 0.0)
 
         if period.mode == "withdraw":
-            dp = max(state.pressure - bhp, 0.0)
-            q_vol = PI * dp
-            q_kg = min(q_vol * rho, qmax)
+            dp = max(P - bhp, 0.0)
+            q_kg = min(PI * dp * rho, qmax)
             return -max(q_kg, 0.0)
 
         return 0.0
 
-    def step(
-        self, state: ReservoirState, period: SchedulePeriod, dt: float
-    ) -> tuple[ReservoirState, float]:
-        """Advance reservoir state by time step dt [s]."""
-        P = state.pressure
-        T = state.temperature
+    def _mass_rate(self, state: ReservoirState, period: SchedulePeriod) -> float:
+        """Signed well mass rate [kg/s] at a reservoir state (diagnostic helper)."""
+        return self._mass_rate_at(state.pressure, state.temperature, period)
 
-        q_mass = self._mass_rate(state, period)
-
-        if abs(q_mass) < 1e-18:
-            new_P = P
-        else:
-            dm = q_mass * dt
-            dm_dP = self._dm_dP(P, T)
-            if abs(dm_dP) < 1e-12:
-                m_cur = self.mass_from_state(P, T)
-                dm_dP = m_cur / max(P, 1e3)
-            dP = dm / dm_dP
-            new_P = P + dP
-
-        # BHP Clamping
-        if period.mode == "inject":
-            new_P = min(new_P, period.bhp_target)
-        elif period.mode == "withdraw":
-            new_P = max(new_P, period.bhp_target)
-
-        new_P = max(new_P, 1.0e3)
-
-        new_T = coupled_temperature_update(
-            T_old=T,
-            P_old=max(P, 1.0),
-            P_new=new_P,
+    def _step_residual(
+        self,
+        P_new: float,
+        P_old: float,
+        T_old: float,
+        m_old: float,
+        period: SchedulePeriod,
+        dt: float,
+    ) -> tuple[float, float, float]:
+        """Mass-balance residual and associated temperature/rate at P_new."""
+        T_new = coupled_temperature_update(
+            T_old=T_old,
+            P_old=max(P_old, 1.0),
+            P_new=max(P_new, 1.0),
             T_geothermal=self.props.reference_temperature,
             dt_s=dt,
             tau_s=self.tau_s,
             eos=self.eos,
         )
+        q = self._mass_rate_at(P_new, T_new, period)
+        m_new = self.mass_from_state(P_new, T_new)
+        return m_new - m_old - q * dt, q, T_new
 
-        new_m = self.mass_from_state(new_P, new_T)
-        return ReservoirState(pressure=new_P, temperature=new_T, mass=new_m), q_mass
+    def step(
+        self, state: ReservoirState, period: SchedulePeriod, dt: float
+    ) -> tuple[ReservoirState, float]:
+        """
+        Advance the reservoir state by dt [s] with an exact mass balance.
+
+        Solving ``m(P_new, T_new) - m_old = q(P_new, T_new)·dt`` removes the
+        explicit linearisation and the old post-hoc BHP clamp: the well rate is
+        the rate that actually changes the inventory, so the reported throughput
+        and the stored mass cannot diverge.
+        """
+        P_old = state.pressure
+        T_old = state.temperature
+        m_old = self.mass_from_state(P_old, T_old)
+
+        if period.mode == "shut_in":
+            lo = max(1.0e3, P_old * 0.5)
+            hi = max(P_old * 1.5, lo * 1.01)
+        else:
+            lo = max(1.0e3, min(P_old, period.bhp_target) * 0.98)
+            hi = max(P_old, period.bhp_target) * 1.02 + 1.0e3
+
+        f_lo = self._step_residual(lo, P_old, T_old, m_old, period, dt)[0]
+        f_hi = self._step_residual(hi, P_old, T_old, m_old, period, dt)[0]
+        for _ in range(80):
+            if f_lo <= 0.0:
+                break
+            lo = max(1.0e3, lo * 0.5)
+            f_lo = self._step_residual(lo, P_old, T_old, m_old, period, dt)[0]
+        for _ in range(80):
+            if f_hi >= 0.0:
+                break
+            hi *= 2.0
+            f_hi = self._step_residual(hi, P_old, T_old, m_old, period, dt)[0]
+
+        P_new = 0.5 * (lo + hi)
+        q = 0.0
+        T_new = T_old
+        for _ in range(80):
+            f, q, T_new = self._step_residual(P_new, P_old, T_old, m_old, period, dt)
+            if abs(f) <= 1.0e-9 * max(abs(m_old), 1.0):
+                break
+            if f > 0.0:
+                hi = P_new
+            else:
+                lo = P_new
+            if hi - lo <= 1.0e-7 * max(P_new, 1.0):
+                break
+
+            dP = max(1.0, 1.0e-6 * P_new)
+            f2 = self._step_residual(P_new + dP, P_old, T_old, m_old, period, dt)[0]
+            slope = (f2 - f) / dP
+            if slope > 0.0 and math.isfinite(slope):
+                P_try = P_new - f / slope
+            else:
+                P_try = 0.5 * (lo + hi)
+            if not (lo < P_try < hi):
+                P_try = 0.5 * (lo + hi)
+            P_new = max(P_try, 1.0e3)
+
+        m_new = self.mass_from_state(P_new, T_new)
+        q_report = (m_new - m_old) / dt if dt > 0.0 else 0.0
+        return ReservoirState(pressure=P_new, temperature=T_new, mass=m_new), q_report
 
     def run_schedule(
         self,
@@ -245,13 +294,18 @@ class UHSReservoir0D:
         collect_time_series: bool = True,
     ) -> SimulationResult:
         result = SimulationResult()
-        state = initial_state
+        m0 = self.mass_from_state(initial_state.pressure, initial_state.temperature)
+        state = ReservoirState(
+            pressure=initial_state.pressure,
+            temperature=initial_state.temperature,
+            mass=m0,
+        )
         t = 0.0
 
         P_max = state.pressure
         P_min = state.pressure
-        m_max = state.mass
-        m_min = state.mass
+        m_max = m0
+        m_min = m0
         inj_kg = 0.0
         wdr_kg = 0.0
 
@@ -263,15 +317,16 @@ class UHSReservoir0D:
             result.mass_rates.append(0.0)
 
         for period in schedule:
-            n_steps = max(int(period.duration_days * 86400.0 / dt_s), 1)
+            n_steps = max(round(period.duration_days * 86400.0 / dt_s), 1)
+            dt_act = period.duration_days * 86400.0 / n_steps
             for _ in range(n_steps):
-                new_state, q = self.step(state, period, dt_s)
-                t += dt_s
+                new_state, q = self.step(state, period, dt_act)
+                t += dt_act
 
                 if q >= 0.0:
-                    inj_kg += q * dt_s
+                    inj_kg += q * dt_act
                 else:
-                    wdr_kg -= q * dt_s
+                    wdr_kg -= q * dt_act
 
                 P_max = max(P_max, new_state.pressure)
                 P_min = min(P_min, new_state.pressure)
@@ -288,18 +343,24 @@ class UHSReservoir0D:
 
         wg = m_max - m_min
         eff = wg / m_max * 100.0 if m_max > 0.0 else 0.0
+        net_kg = inj_kg - wdr_kg
+        mb_err = abs((state.mass - m0) - net_kg) / max(abs(net_kg), 1.0)
 
         result.metrics = {
             "max_pressure_Pa": P_max,
             "min_pressure_Pa": P_min,
             "max_mass_kg": m_max,
             "min_mass_kg": m_min,
+            "initial_mass_kg": m0,
             "cushion_gas_kg": m_min,
             "working_gas_kg": wg,
             "storage_efficiency_pct": eff,
             "total_injected_kg": inj_kg,
             "total_withdrawn_kg": wdr_kg,
-            "cycle_balance_kg": inj_kg - wdr_kg,
+            "net_stored_kg": net_kg,
+            "cycled_gas_kg": inj_kg + wdr_kg,
+            "cycle_balance_kg": net_kg,
+            "mass_balance_error": mb_err,
             "final_pressure_Pa": state.pressure,
             "final_temperature_K": state.temperature,
             "final_mass_kg": state.mass,
@@ -368,10 +429,19 @@ def build_rough_reservoir() -> ReservoirProperties:
 
 
 def schedule_cavern(P_ref: float) -> list[SchedulePeriod]:
+    """
+    Canonical salt-cavern schedule.
+
+    ``P_ref`` is the minimum operating pressure.  The cavern is filled by
+    80 bar above that (Teesside: 40 → 120 bar), then cycled 180 times.  The
+    15 kg/s rate limit is representative of a single Teesside well; the exact
+    step solver lets the pressure targets, not the rate cap, terminate each
+    half-cycle.
+    """
     bar = 1.0e5
-    P_max = min(2.0 * P_ref, P_ref + 80.0 * bar)
-    P_min = max(0.35 * P_ref, P_ref - 25.0 * bar)
-    qmax = 200.0
+    P_min = P_ref
+    P_max = P_ref + 80.0 * bar
+    qmax = 15.0
     sched = [SchedulePeriod("cushion_fill", "inject", 90.0, P_max, qmax)]
     for i in range(180):
         sched.extend(
@@ -513,7 +583,6 @@ def export_timeseries_csv(result: SimulationResult, filepath: str) -> None:
             result.temperatures,
             result.masses,
             result.mass_rates,
-            strict=False,
         ):
             w.writerow(
                 [

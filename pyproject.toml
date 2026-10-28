@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "h2multisim"
-version = "1.0.0"
+version = "1.0.1"
 description = "Multi-scale pure-Python simulation toolkit for underground hydrogen storage (UHS)"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -56,6 +56,8 @@ line-length = 100
 exclude = [
     "h2_*.py",
     "legacy",
+    "audit",
+    "*.md",
 ]
 
 [tool.ruff.lint]
