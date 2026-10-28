@@ -25,3 +25,10 @@ htmlcov/
 output/
 h2store_output/
 sim_output/
+
+# Private research papers, drafts, and manuscripts
+docs/papers/
+papers/
+*.tex
+*.aux
+*.out
