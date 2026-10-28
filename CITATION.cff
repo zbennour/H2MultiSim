@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "H2MultiSim: Multi-Scale Pure-Python Simulation Toolkit for Underground Hydrogen Storage"
+type: software
+authors:
+  - family-names: Bennour
+    given-names: Ziad
+    email: zbennour@yahoo.com
+repository-code: "https://github.com/zbennour/H2MultiSim"
+license: GPL-3.0-or-later
+version: "1.0.1"
+date-released: "2026-10-28"
+keywords:
+  - hydrogen storage
+  - underground hydrogen storage
+  - reservoir simulation
+  - Peng-Robinson
+  - finite volume
+abstract: >
+  H2MultiSim is a dependency-free Python toolkit for underground hydrogen storage
+  modelling across 0D, 1D, 2D and 3D scales, with a shared Peng-Robinson
+  thermodynamic core and Monte Carlo uncertainty quantification.
+preferred-citation:
+  type: software
+  title: "H2MultiSim"
+  authors:
+    - family-names: Bennour
+      given-names: Ziad
+  year: 2026
