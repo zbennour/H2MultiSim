@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 from h2multisim import __version__
+from h2multisim.config import build_from_config
 from h2multisim.models.one_d import (
     UHSRadial1D,
     export_radial_timeseries_csv,
@@ -60,25 +61,30 @@ def _require_scenario(scale: str, scenario: str, allowed: tuple[str, ...]) -> bo
 
 
 def _run_0d(args: argparse.Namespace) -> int:
-    scenario = args.scenario or "teesside"
-    if not _require_scenario("0D", scenario, ("teesside", "rough", "okoroafor")):
-        return 2
+    if getattr(args, "_props", None) is not None:
+        props = args._props
+        sched = args._schedule
+        scenario = "config"
+    else:
+        scenario = args.scenario or "teesside"
+        if not _require_scenario("0D", scenario, ("teesside", "rough", "okoroafor")):
+            return 2
+        if scenario == "teesside":
+            props = build_teesside_cavern()
+            sched = schedule_cavern(props.reference_pressure)
+        elif scenario == "rough":
+            props = build_rough_reservoir()
+            sched = schedule_porous_reservoir(props.reference_pressure)
+        else:  # okoroafor
+            props = build_okoroafor_reservoir()
+            sched = schedule_porous_reservoir(props.reference_pressure)
+
     out_dir = args.out_dir or "output"
     os.makedirs(out_dir, exist_ok=True)
 
     print("\n=======================================================")
     print(f"  H2MultiSim™ 0D Lumped Simulation: Scenario [{scenario}]")
     print("=======================================================")
-
-    if scenario == "teesside":
-        props = build_teesside_cavern()
-        sched = schedule_cavern(props.reference_pressure)
-    elif scenario == "rough":
-        props = build_rough_reservoir()
-        sched = schedule_porous_reservoir(props.reference_pressure)
-    else:  # okoroafor
-        props = build_okoroafor_reservoir()
-        sched = schedule_porous_reservoir(props.reference_pressure)
 
     model = UHSReservoir0D(props)
     s0 = ReservoirState(
@@ -131,18 +137,23 @@ def _run_0d(args: argparse.Namespace) -> int:
 
 
 def _run_1d(args: argparse.Namespace) -> int:
-    if args.scenario is not None and args.scenario != "okoroafor":
-        _require_scenario("1D", args.scenario, ("okoroafor",))
-        return 2
+    if getattr(args, "_props", None) is not None:
+        props = args._props
+        sched = args._schedule
+    else:
+        if args.scenario is not None and args.scenario != "okoroafor":
+            _require_scenario("1D", args.scenario, ("okoroafor",))
+            return 2
+        props, sched = okoroafor_radial()
+
     out_dir = args.out_dir or "output"
     os.makedirs(out_dir, exist_ok=True)
     dt_days = args.dt_days or 0.2
 
     print("\n=======================================================")
-    print("  H2MultiSim™ 1D Radial Model: Okoroafor Near-Wellbore")
+    print("  H2MultiSim™ 1D Radial Model")
     print("=======================================================")
 
-    props, sched = okoroafor_radial()
     model = UHSRadial1D(props, N=40)
     result = model.run_schedule(sched, dt_days=dt_days)
     m = result.metrics
@@ -162,9 +173,23 @@ def _run_1d(args: argparse.Namespace) -> int:
 
 
 def _run_2d(args: argparse.Namespace) -> int:
-    scenario = args.scenario or "five_spot"
-    if not _require_scenario("2D", scenario, ("five_spot", "thief_zone", "single_well")):
-        return 2
+    if getattr(args, "_props", None) is not None:
+        props = args._props
+        wells = args._wells
+        sched = args._schedule
+        scenario = "config"
+    else:
+        scenario = args.scenario or "five_spot"
+        if not _require_scenario("2D", scenario, ("five_spot", "thief_zone", "single_well")):
+            return 2
+        nx, ny = 15, 15
+        if scenario == "thief_zone":
+            props, wells, sched = scenario_thief_zone(nx, ny)
+        elif scenario == "single_well":
+            props, wells, sched = scenario_single_well(nx, ny)
+        else:  # five_spot
+            props, wells, sched = scenario_five_spot(nx, ny)
+
     out_dir = args.out_dir or "output"
     os.makedirs(out_dir, exist_ok=True)
     dt_days = args.dt_days or 0.5
@@ -173,19 +198,13 @@ def _run_2d(args: argparse.Namespace) -> int:
     print(f"  H2MultiSim™ 2D Areal Simulation: Scenario [{scenario}]")
     print("=======================================================")
 
-    nx, ny = 15, 15
-    if scenario == "thief_zone":
-        props, wells, sched = scenario_thief_zone(nx, ny)
-    elif scenario == "single_well":
-        props, wells, sched = scenario_single_well(nx, ny)
-    else:  # five_spot
-        props, wells, sched = scenario_five_spot(nx, ny)
-
     model = UHSAreal2D(props, wells)
     result = model.run_schedule(sched, dt_days=dt_days)
     m = result.metrics
 
-    print(f"  Domain Grid              : {nx} x {ny} cells ({props.Lx:.0f}m x {props.Ly:.0f}m)")
+    print(
+        f"  Domain Grid              : {props.nx} x {props.ny} cells ({props.Lx:.0f}m x {props.Ly:.0f}m)"
+    )
     print(f"  Active Wells             : {len(wells)}")
     print(f"  Max Average Pressure     : {m['max_P_bar']:.2f} bar")
     print(f"  Min Average Pressure     : {m['min_P_bar']:.2f} bar")
@@ -200,11 +219,25 @@ def _run_2d(args: argparse.Namespace) -> int:
 
 
 def _run_3d(args: argparse.Namespace) -> int:
-    scenario = args.scenario or "layered_reservoir"
-    if not _require_scenario(
-        "3D", scenario, ("gravity_override", "single_well_3d", "layered_reservoir")
-    ):
-        return 2
+    if getattr(args, "_props", None) is not None:
+        props = args._props
+        wells = args._wells
+        sched = args._schedule
+        scenario = "config"
+    else:
+        scenario = args.scenario or "layered_reservoir"
+        if not _require_scenario(
+            "3D", scenario, ("gravity_override", "single_well_3d", "layered_reservoir")
+        ):
+            return 2
+        nx, ny, nz = 8, 8, 5
+        if scenario == "gravity_override":
+            props, wells, sched = scenario_gravity_override(nx, ny, nz)
+        elif scenario == "single_well_3d":
+            props, wells, sched = scenario_single_well_3d(nx, ny, nz)
+        else:  # layered_reservoir
+            props, wells, sched = scenario_layered_reservoir(nx, ny, nz)
+
     out_dir = args.out_dir or "output"
     os.makedirs(out_dir, exist_ok=True)
     dt_days = args.dt_days or 2.0
@@ -213,19 +246,13 @@ def _run_3d(args: argparse.Namespace) -> int:
     print(f"  H2MultiSim™ 3D Field-Scale Simulation: [{scenario}]")
     print("=======================================================")
 
-    nx, ny, nz = 8, 8, 5
-    if scenario == "gravity_override":
-        props, wells, sched = scenario_gravity_override(nx, ny, nz)
-    elif scenario == "single_well_3d":
-        props, wells, sched = scenario_single_well_3d(nx, ny, nz)
-    else:  # layered_reservoir
-        props, wells, sched = scenario_layered_reservoir(nx, ny, nz)
-
     model = UHSFieldScale3D(props, wells)
     result = model.run_schedule(sched, dt_days=dt_days, verbose=False)
     m = result.metrics
 
-    print(f"  Domain Grid              : {nx} x {ny} x {nz} ({nx * ny * nz} total cells)")
+    print(
+        f"  Domain Grid              : {props.nx} x {props.ny} x {props.nz} ({props.nx * props.ny * props.nz} total cells)"
+    )
     print(f"  Max Reservoir Pressure   : {m['max_P_bar']:.2f} bar")
     print(f"  Min Reservoir Pressure   : {m['min_P_bar']:.2f} bar")
     print(f"  Working Gas Stored       : {m['working_gas_t']:.2f} tonnes")
@@ -277,8 +304,8 @@ def main() -> None:
     run_parser.add_argument(
         "--scale",
         choices=["0d", "1d", "2d", "3d"],
-        required=True,
-        help="Dimensional simulation scale",
+        required=False,
+        help="Dimensional simulation scale (not needed with --config)",
     )
     run_parser.add_argument(
         "--scenario",
@@ -296,6 +323,9 @@ def main() -> None:
     run_parser.add_argument(
         "--out-dir", type=str, default="output", help="Directory for exported CSV time series"
     )
+    run_parser.add_argument(
+        "--config", type=str, default=None, help="Path to a JSON/YAML run configuration file"
+    )
 
     # test command
     subparsers.add_parser("test", help="Execute the validation benchmark test suite")
@@ -305,7 +335,32 @@ def main() -> None:
     if args.command == "test":
         sys.exit(_run_tests(args))
     elif args.command == "run":
-        if args.scale == "0d":
+        if getattr(args, "config", None):
+            try:
+                from h2multisim.config import load_config
+
+                cfg = load_config(args.config)
+            except Exception as exc:  # noqa: BLE001
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(2)
+            scale, props, wells, sched, dt_days, out_dir = build_from_config(cfg)
+            args._props = props
+            args._wells = wells
+            args._schedule = sched
+            args.out_dir = out_dir
+            args.dt_days = dt_days
+            if scale == "0d":
+                sys.exit(_run_0d(args))
+            elif scale == "1d":
+                sys.exit(_run_1d(args))
+            elif scale == "2d":
+                sys.exit(_run_2d(args))
+            elif scale == "3d":
+                sys.exit(_run_3d(args))
+        elif not args.scale:
+            print("Error: --scale is required unless --config is given", file=sys.stderr)
+            sys.exit(2)
+        elif args.scale == "0d":
             sys.exit(_run_0d(args))
         elif args.scale == "1d":
             sys.exit(_run_1d(args))
