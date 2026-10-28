@@ -35,4 +35,4 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
       - name: Run test suite
-        run: uv run --python ${{ matrix.python-version }} --extra dev pytest -v
+        run: uv run --python ${{ matrix.python-version }} --extra dev pytest -v --cov=h2multisim --cov-report=term-missing

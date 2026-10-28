@@ -207,6 +207,25 @@ class UHSAreal2D:
         mu = viscosity_h2(T[w.i][w.j], P[w.i][w.j])
         return 2.0 * math.pi * k_w * self.props.h * rho / (mu * ln_r)
 
+    def _assemble_well_contributions_2d(
+        self, ctrl, Pk, Tk, rate_q, shut_wells, nx, ny
+    ):
+        well_diag = [[0.0] * ny for _ in range(nx)]
+        well_rhs = [[0.0] * ny for _ in range(nx)]
+        wi_now: dict[str, float] = {}
+        for w in self.wells:
+            wi = self._well_index(w, Pk, Tk)
+            wi_now[w.name] = wi
+            mode_w = ctrl.mode_for(w.name)
+            if mode_w == "shut_in" or w.name in shut_wells:
+                continue
+            if w.name in rate_q:
+                well_rhs[w.i][w.j] += rate_q[w.name]
+            else:
+                well_diag[w.i][w.j] += wi
+                well_rhs[w.i][w.j] += wi * ctrl.bhp_target
+        return well_diag, well_rhs, wi_now
+
     def _solve_picard(
         self,
         P_old: list[list[float]],
@@ -254,20 +273,9 @@ class UHSAreal2D:
                 for i in range(nx)
             ]
 
-            well_diag = [[0.0] * ny for _ in range(nx)]
-            well_rhs = [[0.0] * ny for _ in range(nx)]
-            wi_now: dict[str, float] = {}
-            for w in self.wells:
-                wi = self._well_index(w, Pk, Tk)
-                wi_now[w.name] = wi
-                mode_w = ctrl.mode_for(w.name)
-                if mode_w == "shut_in" or w.name in shut_wells:
-                    continue
-                if w.name in rate_q:
-                    well_rhs[w.i][w.j] += rate_q[w.name]
-                else:
-                    well_diag[w.i][w.j] += wi
-                    well_rhs[w.i][w.j] += wi * ctrl.bhp_target
+            well_diag, well_rhs, wi_now = self._assemble_well_contributions_2d(
+                ctrl, Pk, Tk, rate_q, shut_wells, nx, ny
+            )
 
             P_new = [list(row) for row in Pk]
             for _iter in range(self.max_iter):

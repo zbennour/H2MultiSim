@@ -247,6 +247,40 @@ class UHSFieldScale3D:
         rho_h = 2.0 * rhoD * rhoU / (rhoD + rhoU + 1e-30)
         return rho_h * self.g * self.dz
 
+    def _assemble_well_contributions(
+        self,
+        ctrl: Schedule3D,
+        Pk,
+        Tk,
+        rate_q: dict[str, float],
+        shut_wells: set[str],
+        nz: int,
+    ) -> tuple:
+        """Compute well diagonal/rhs contributions and well indices for a step."""
+        well_diag = [[[0.0] * nz for _ in range(self.ny)] for _ in range(self.nx)]
+        well_rhs = [[[0.0] * nz for _ in range(self.ny)] for _ in range(self.nx)]
+        wi_now: dict[str, dict[int, float]] = {}
+        for w in self.wells:
+            wi_now[w.name] = {}
+            for kl in range(w.k_min, w.k_max + 1):
+                if 0 <= kl < nz:
+                    wi_now[w.name][kl] = self._well_index(w, Pk, Tk, kl)
+            if ctrl.mode == "shut_in" or w.name in shut_wells:
+                continue
+            if w.name in rate_q:
+                sum_wi = sum(wi_now[w.name].values())
+                if sum_wi <= 0.0:
+                    continue
+                sum_wiP = sum(wi * Pk[w.i][w.j][kl] for kl, wi in wi_now[w.name].items())
+                bhp_rc = (rate_q[w.name] + sum_wiP) / sum_wi
+                for kl, wi in wi_now[w.name].items():
+                    well_rhs[w.i][w.j][kl] += wi * (bhp_rc - Pk[w.i][w.j][kl])
+            else:
+                for kl, wi in wi_now[w.name].items():
+                    well_diag[w.i][w.j][kl] += wi
+                    well_rhs[w.i][w.j][kl] += wi * ctrl.bhp_target
+        return well_diag, well_rhs, wi_now
+
     def _solve_picard(
         self,
         P_old: list[list[list[float]]],
@@ -315,28 +349,9 @@ class UHSFieldScale3D:
                 for i in range(nx)
             ]
 
-            well_diag = [[[0.0] * nz for _ in range(ny)] for _ in range(nx)]
-            well_rhs = [[[0.0] * nz for _ in range(ny)] for _ in range(nx)]
-            wi_now: dict[str, dict[int, float]] = {}
-            for w in self.wells:
-                wi_now[w.name] = {}
-                for kl in range(w.k_min, w.k_max + 1):
-                    if 0 <= kl < nz:
-                        wi_now[w.name][kl] = self._well_index(w, Pk, Tk, kl)
-                if ctrl.mode == "shut_in" or w.name in shut_wells:
-                    continue
-                if w.name in rate_q:
-                    sum_wi = sum(wi_now[w.name].values())
-                    if sum_wi <= 0.0:
-                        continue
-                    sum_wiP = sum(wi * Pk[w.i][w.j][kl] for kl, wi in wi_now[w.name].items())
-                    bhp_rc = (rate_q[w.name] + sum_wiP) / sum_wi
-                    for kl, wi in wi_now[w.name].items():
-                        well_rhs[w.i][w.j][kl] += wi * (bhp_rc - Pk[w.i][w.j][kl])
-                else:
-                    for kl, wi in wi_now[w.name].items():
-                        well_diag[w.i][w.j][kl] += wi
-                        well_rhs[w.i][w.j][kl] += wi * ctrl.bhp_target
+            well_diag, well_rhs, wi_now = self._assemble_well_contributions(
+                ctrl, Pk, Tk, rate_q, shut_wells, nz
+            )
 
             P_new = [[list(Pk[i][j]) for j in range(ny)] for i in range(nx)]
             for _it in range(self.max_iter):
@@ -608,6 +623,18 @@ class UHSFieldScale3D:
         jdx = j if j is not None else self.ny // 2
         return [(self.zs[k], pa_to_bar(P[idx][jdx][k])) for k in range(self.nz)]
 
+    def _hydrostatic_init(self, P, nx, ny, nz):
+        if not self.hydrostatic_init:
+            return P
+        rho0 = self.eos.density(self.props.P_init, self.props.T_init)
+        z_ref = (nz - 1) * self.props.Lz / (2.0 * nz)
+        for i in range(nx):
+            for j in range(ny):
+                for k in range(nz):
+                    z = (k + 0.5) * self.props.Lz / nz
+                    P[i][j][k] = self.props.P_init + rho0 * self.g * (z_ref - z)
+        return P
+
     def run_schedule(
         self,
         schedule: list[Schedule3D],
@@ -617,14 +644,7 @@ class UHSFieldScale3D:
     ) -> Result3D:
         nx, ny, nz = self.nx, self.ny, self.nz
         P = [[[self.props.P_init] * nz for _ in range(ny)] for _ in range(nx)]
-        if self.hydrostatic_init:
-            rho0 = self.eos.density(self.props.P_init, self.props.T_init)
-            z_ref = (nz - 1) * self.props.Lz / (2.0 * nz)
-            for i in range(nx):
-                for j in range(ny):
-                    for k in range(nz):
-                        z = (k + 0.5) * self.props.Lz / nz
-                        P[i][j][k] = self.props.P_init + rho0 * self.g * (z_ref - z)
+        P = self._hydrostatic_init(P, nx, ny, nz)
         T = [[[self.props.T_init] * nz for _ in range(ny)] for _ in range(nx)]
         t = 0.0
 

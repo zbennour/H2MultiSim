@@ -345,7 +345,7 @@ def main() -> None:
                 from h2multisim.config import load_config
 
                 cfg = load_config(args.config)
-            except Exception as exc:  # noqa: BLE001
+            except (OSError, ValueError, RuntimeError) as exc:  # noqa: BLE001
                 print(f"Error: {exc}", file=sys.stderr)
                 sys.exit(2)
             scale, props, wells, sched, dt_days, out_dir = build_from_config(cfg)
