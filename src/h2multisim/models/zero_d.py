@@ -481,6 +481,33 @@ def schedule_porous_reservoir(P_ref: float) -> list[SchedulePeriod]:
     return sched
 
 
+def schedule_rough(P_ref: float) -> list[SchedulePeriod]:
+    """
+    Rough-style large depleted gas field schedule.
+
+    Operating window:
+        P_min = max(0.65 · P_ref, 100 bar)
+        P_max = min(1.45 · P_ref, 220 bar)
+
+    Phase 1: 270-day cushion gas fill (q_max = 90 kg/s)
+    Phase 2: 3 annual cycles (210d injection, 120d withdrawal, 35d shut-in)
+    """
+    bar = 1.0e5
+    P_max = min(1.45 * P_ref, 220.0 * bar)
+    P_min = max(0.65 * P_ref, 100.0 * bar)
+    qmax = 90.0
+    sched = [SchedulePeriod("cushion_fill", "inject", 270.0, P_max, qmax)]
+    for i in range(3):
+        sched.extend(
+            [
+                SchedulePeriod(f"c{i + 1}_inj", "inject", 210.0, P_max, qmax),
+                SchedulePeriod(f"c{i + 1}_wdr", "withdraw", 120.0, P_min, qmax),
+                SchedulePeriod(f"c{i + 1}_sht", "shut_in", 35.0, 0.0, 0.0),
+            ]
+        )
+    return sched
+
+
 # ── Monte Carlo Geological Uncertainty ───────────────────────────────────────
 @dataclass
 class MonteCarloConfig:

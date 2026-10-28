@@ -493,6 +493,32 @@ def scenario_1d_nearwell() -> tuple[RadialReservoirProps, list[WellControl]]:
     return okoroafor_radial()
 
 
+def rough_radial() -> tuple[RadialReservoirProps, list[WellControl]]:
+    """
+    Rough-style 1D radial scenario. 150 bar / 369 K, 2700 m depth.
+    90-day cushion fill -> 60-day withdrawal -> 10-day shut-in.
+    """
+    props = RadialReservoirProps(
+        r_well=0.15,
+        r_ext=500.0,
+        h=30.0,
+        phi=0.15,
+        k=mD_to_m2(100.0),
+        Ct=4.0e-10,
+        P_init=bar_to_pa(150.0),
+        T_init=369.0,
+        skin=0.0,
+        outer_bc="no_flow",
+        tau_days=40.0,
+    )
+    schedule = [
+        WellControl("cushion_90d", "inject", 90.0, bar_to_pa(217.5), 90.0),
+        WellControl("withdraw_60d", "withdraw", 60.0, bar_to_pa(97.5), 90.0),
+        WellControl("shut_in_10d", "shut_in", 10.0, 0.0, 0.0),
+    ]
+    return props, schedule
+
+
 def export_radial_timeseries_csv(result: RadialResult, filepath: str) -> None:
     """Export 1D radial time series to CSV."""
     if not result.times_s:

@@ -20,6 +20,7 @@ from h2multisim.models.one_d import (
     WellControl,
     build_log_grid,
     okoroafor_radial,
+    rough_radial,
     scenario_1d_nearwell,
     thomas_solve,
 )
@@ -51,6 +52,7 @@ from h2multisim.models.two_d import (
     UHSAreal2D,
     Well2D,
     WellSpec2D,
+    compute_sweep_efficiency,
     pressure_uniformity,
     scenario_five_spot,
     scenario_single_well,
@@ -73,6 +75,7 @@ from h2multisim.models.zero_d import (
     run_monte_carlo,
     schedule_cavern,
     schedule_porous_reservoir,
+    schedule_rough,
 )
 
 __all__ = [
@@ -93,6 +96,7 @@ __all__ = [
     "build_rough_reservoir",
     "schedule_cavern",
     "schedule_porous_reservoir",
+    "schedule_rough",
     # 1D
     "UHSRadial1D",
     "H2Reservoir1DModel",
@@ -106,6 +110,7 @@ __all__ = [
     "build_log_grid",
     "thomas_solve",
     "okoroafor_radial",
+    "rough_radial",
     "scenario_1d_nearwell",
     # 2D
     "UHSAreal2D",
@@ -122,6 +127,7 @@ __all__ = [
     "scenario_single_well",
     "scenario_five_spot",
     "scenario_thief_zone",
+    "compute_sweep_efficiency",
     "pressure_uniformity",
     # 3D
     "UHSFieldScale3D",

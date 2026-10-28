@@ -25,8 +25,11 @@ from h2multisim.models import (
     build_okoroafor_reservoir,
     build_rough_reservoir,
     build_teesside_cavern,
+    compute_sweep_efficiency,
+    rough_radial,
     schedule_cavern,
     schedule_porous_reservoir,
+    schedule_rough,
 )
 from h2multisim.thermo import (
     IsothermModel,
@@ -35,6 +38,8 @@ from h2multisim.thermo import (
     adiabatic_temperature,
     coupled_temperature_update,
     cp_ideal_h2,
+    cp_real_h2,
+    cp_specific_real_h2,
     gamma_real_h2,
     joule_thomson_coefficient,
     thermal_relaxation_update,
@@ -84,6 +89,9 @@ __all__ = [
     "build_rough_reservoir",
     "schedule_cavern",
     "schedule_porous_reservoir",
+    "schedule_rough",
+    "rough_radial",
+    "compute_sweep_efficiency",
     # Thermodynamics
     "PengRobinsonH2",
     "PoreVolumeModel",
@@ -95,6 +103,8 @@ __all__ = [
     "thermal_relaxation_update",
     "coupled_temperature_update",
     "cp_ideal_h2",
+    "cp_real_h2",
+    "cp_specific_real_h2",
     # Units
     "pa_to_bar",
     "bar_to_pa",

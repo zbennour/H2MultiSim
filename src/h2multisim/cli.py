@@ -20,6 +20,7 @@ from h2multisim.models.one_d import (
     UHSRadial1D,
     export_radial_timeseries_csv,
     okoroafor_radial,
+    rough_radial,
 )
 from h2multisim.models.three_d import (
     UHSFieldScale3D,
@@ -46,6 +47,7 @@ from h2multisim.models.zero_d import (
     run_monte_carlo,
     schedule_cavern,
     schedule_porous_reservoir,
+    schedule_rough,
 )
 from h2multisim.units import pa_to_bar
 
@@ -74,7 +76,7 @@ def _run_0d(args: argparse.Namespace) -> int:
             sched = schedule_cavern(props.reference_pressure)
         elif scenario == "rough":
             props = build_rough_reservoir()
-            sched = schedule_porous_reservoir(props.reference_pressure)
+            sched = schedule_rough(props.reference_pressure)
         else:  # okoroafor
             props = build_okoroafor_reservoir()
             sched = schedule_porous_reservoir(props.reference_pressure)
@@ -141,10 +143,13 @@ def _run_1d(args: argparse.Namespace) -> int:
         props = args._props
         sched = args._schedule
     else:
-        if args.scenario is not None and args.scenario != "okoroafor":
-            _require_scenario("1D", args.scenario, ("okoroafor",))
+        if args.scenario is not None and args.scenario not in ("okoroafor", "rough"):
+            _require_scenario("1D", args.scenario, ("okoroafor", "rough"))
             return 2
-        props, sched = okoroafor_radial()
+        if args.scenario == "rough":
+            props, sched = rough_radial()
+        else:
+            props, sched = okoroafor_radial()
 
     out_dir = args.out_dir or "output"
     os.makedirs(out_dir, exist_ok=True)
