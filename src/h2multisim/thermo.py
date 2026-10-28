@@ -62,9 +62,12 @@ class PengRobinsonH2:
     Newton-Raphson polish for numerical precision and absolute stability.
     """
 
-    def __init__(self, max_iter: int = 50, tol: float = 1e-10) -> None:
+    def __init__(
+        self, max_iter: int = 50, tol: float = 1e-10, volume_translation: float = 0.0
+    ) -> None:
         self.max_iter: int = max_iter
         self.tol: float = tol
+        self.volume_translation: float = float(volume_translation)  # m³/mol Peneloux c
         self.ac: float = 0.45724 * R_UNIVERSAL**2 * T_C**2 / P_C
         self.b: float = 0.07780 * R_UNIVERSAL * T_C / P_C
         self.kappa: float = 0.37464 + 1.54226 * OMEGA - 0.26992 * OMEGA**2
@@ -116,6 +119,13 @@ class PengRobinsonH2:
             if abs(dZ) < self.tol:
                 break
 
+        # Optional Peneloux volume translation: V = V_PR - c, i.e.
+        # Z_corr = Z_PR - c*P/(R*T).  c = -4.0e-6 reproduces the <1 % Z
+        # result verified in AUDIT.md (F-04).  Default c = 0 (plain PR).
+        c = self.volume_translation
+        if c != 0.0:
+            Z = Z - c * P / (R_UNIVERSAL * T_eff)
+
         return float(max(Z, 1e-4))
 
     def density(self, P: float, T: float) -> float:
@@ -162,6 +172,10 @@ class PengRobinsonH2:
             / (2.0 * s2 * max(B, 1e-12))
             * math.log(max((Z + (1.0 + s2) * B) / (Z + (1.0 - s2) * B), 1e-12))
         )
+        # Peneloux volume-translation correction to fugacity.
+        c = self.volume_translation
+        if c != 0.0:
+            ln_phi -= c * P_val / (R_UNIVERSAL * T_val)
         return math.exp(max(-50.0, min(50.0, ln_phi)))
 
     def fugacity(self, P: float, T: float) -> float:

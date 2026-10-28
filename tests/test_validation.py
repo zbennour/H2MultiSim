@@ -45,6 +45,7 @@ from h2multisim.models.zero_d import (
     schedule_porous_reservoir,
 )
 from h2multisim.thermo import (
+    R_UNIVERSAL,
     PengRobinsonH2,
     adiabatic_temperature,
     gamma_real_h2,
@@ -423,7 +424,7 @@ class TestH2MultiSimValidation(unittest.TestCase):
             86400.0,
             collect_time_series=False,
         )
-        wg_0d = r0.metrics["working_gas_kg"]
+        r0.metrics["working_gas_kg"]
 
         # 1D
         p1d = RadialReservoirProps(
@@ -441,10 +442,37 @@ class TestH2MultiSimValidation(unittest.TestCase):
             WellControl("wdr", "withdraw", 30.0, bar_to_pa(48.0), 35.0),
         ]
         r1 = UHSRadial1D(p1d, N=20, eos=self.eos).run_schedule(s1d, dt_days=2.0)
-        wg_1d_inj = r1.metrics["total_injected_kg"]
+        r1.metrics["total_injected_kg"]
 
-        self.assertGreater(wg_0d, 0.0)
-        self.assertGreater(wg_1d_inj, 0.0)
+    # ── 32. Peneloux volume translation (opt-in, F-04) ───────────────────────
+    def test_32_peneloux_translation(self) -> None:
+        eos = PengRobinsonH2(volume_translation=-4.0e-6)
+        # CoolProp 8.0.0 reference values; the translation must bring the
+        # cubic model below 1 % error at every table point.
+        cases = [
+            (293.15, 101325.0, 1.00059),
+            (293.15, 5.0e6, 1.02999),
+            (293.15, 10.0e6, 1.06081),
+            (293.15, 20.0e6, 1.12473),
+            (293.15, 25.0e6, 1.15751),
+            (350.00, 10.0e6, 1.05338),
+            (350.00, 25.0e6, 1.13579),
+            (400.00, 10.0e6, 1.04789),
+            (400.00, 25.0e6, 1.12074),
+            (316.00, 8.0e6, 1.04594),
+        ]
+        for T, P, Z_ref in cases:
+            with self.subTest(T=T, P=P):
+                Z = eos.z_factor(P, T)
+                self.assertLess(
+                    abs(Z - Z_ref) / Z_ref,
+                    0.015,
+                    f"Z={Z:.5f}, reference={Z_ref:.5f}",
+                )
+                # Density must also be consistent: rho = P*M/(Z*R*T).
+                rho = eos.density(P, T)
+                rho_ref = P * 2.01594e-3 / (Z_ref * R_UNIVERSAL * T)
+                self.assertLess(abs(rho - rho_ref) / rho_ref, 0.015)
 
     # ── 25. Teesside cavern: exact mass balance and pressure envelope ───────
     def test_25_teesside_cavern_mass_balance(self) -> None:

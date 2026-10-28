@@ -57,8 +57,8 @@ transfer or regulatory reporting.
 
 The Peng–Robinson Z-factor error reaches ~4% at 250 bar.  A Peneloux volume
 translation ($c=-4.0\times10^{-6}\ \mathrm{m^3/mol}$) reduces the maximum Z error
-to below 1% and is the recommended next thermophysical change (see `AUDIT.md`,
-finding F-04).  Mass balance in the 0D/1D/2D/3D solvers is closed to better than
+to below 1% and is available opt-in as
+`PengRobinsonH2(volume_translation=-4.0e-6)` (see `AUDIT.md`, finding F-04).  Mass balance in the 0D/1D/2D/3D solvers is closed to better than
 $10^{-6}$ relative error by the v1.0.1 solver.
 
 ---
