@@ -130,6 +130,7 @@ class UHSFieldScale3D:
         tol_Pa: float = 1.0e-4,
         max_picard: int = 20,
         picard_tol_Pa: float = 1.0e-4,
+        hydrostatic_init: bool = True,
     ) -> None:
         self.props = props
         self.wells = wells
@@ -139,6 +140,7 @@ class UHSFieldScale3D:
         self.tol_Pa = tol_Pa
         self.max_picard = max_picard
         self.picard_tol_Pa = picard_tol_Pa
+        self.hydrostatic_init = hydrostatic_init
         self.tau_s = props.tau_days * 86400.0
         self.g = G_GRAV
 
@@ -605,6 +607,14 @@ class UHSFieldScale3D:
     ) -> Result3D:
         nx, ny, nz = self.nx, self.ny, self.nz
         P = [[[self.props.P_init] * nz for _ in range(ny)] for _ in range(nx)]
+        if self.hydrostatic_init:
+            rho0 = self.eos.density(self.props.P_init, self.props.T_init)
+            z_ref = (nz - 1) * self.props.Lz / (2.0 * nz)
+            for i in range(nx):
+                for j in range(ny):
+                    for k in range(nz):
+                        z = (k + 0.5) * self.props.Lz / nz
+                        P[i][j][k] = self.props.P_init + rho0 * self.g * (z_ref - z)
         T = [[[self.props.T_init] * nz for _ in range(ny)] for _ in range(nx)]
         t = 0.0
 
