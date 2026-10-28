@@ -674,6 +674,27 @@ def scenario_thief_zone(
     return props, wells, sched
 
 
+def compute_sweep_efficiency(
+    P_field: list[list[float]] | list[float],
+    P_init: float,
+    threshold_Pa: float = 1.0e4,
+) -> float:
+    """
+    Volumetric sweep efficiency: fraction of cells where |P - P_init| > threshold_Pa.
+    Accepts either a 2D grid [nx][ny] or a flat 1D sequence of cell pressures.
+    """
+    if not P_field:
+        return 0.0
+    if isinstance(P_field[0], (int, float)):
+        vals = [float(p) for p in P_field]
+    else:
+        vals = [float(p) for row in P_field for p in row]  # type: ignore[union-attr]
+    if not vals:
+        return 0.0
+    n_swept = sum(1 for p in vals if abs(p - P_init) > threshold_Pa)
+    return float(n_swept / len(vals))
+
+
 def pressure_uniformity(P_field: list[list[float]]) -> float:
     nx = len(P_field)
     ny = len(P_field[0]) if nx > 0 else 0

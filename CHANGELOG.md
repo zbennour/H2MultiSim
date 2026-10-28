@@ -7,7 +7,13 @@
 - Added Muzny et al. (2013) / NIST density-dependent dense-fluid residual correction to `viscosity_h2`, reducing high-pressure viscosity error from 9.2% down to <1.5% across 250–450 K and 1–350 bar.
 - Added `cp_real_h2` and `cp_specific_real_h2` evaluating real-gas isobaric heat capacity via Peng-Robinson enthalpy departure.
 - Resolved analytical Joule-Thomson coefficient formulation via $T(\partial V/\partial T)_P - V = (R T^2/P)(\partial Z/\partial T) + c$, eliminating numerical cancellation and restoring exact physical negative sign and magnitude.
-- Expanded validation test suite to 33 test suites (29 subtests).
+- Expanded validation test suite to 34 test cases (with 29 subtests).
+
+### Scenarios & Domain Enhancements
+- Added `schedule_rough` in 0D representing Rough depleted gas field operating schedule (270d cushion gas fill, 3 annual cycles).
+- Added `rough_radial` in 1D modeling Rough-scale radial well operations at 150 bar, 369 K.
+- Added `compute_sweep_efficiency` in 2D supporting volumetric sweep fraction evaluation on both 2D grids and flat cell arrays.
+- Exposed `--scenario rough` across `0d` and `1d` simulation scales via CLI.
 
 ## v1.0.1 — 2026-10-28
 

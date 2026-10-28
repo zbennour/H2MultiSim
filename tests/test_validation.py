@@ -16,6 +16,7 @@ from h2multisim.models.one_d import (
     UHSRadial1D,
     WellControl,
     okoroafor_radial,
+    rough_radial,
     thomas_solve,
 )
 from h2multisim.models.three_d import (
@@ -28,6 +29,7 @@ from h2multisim.models.three_d import (
 from h2multisim.models.two_d import (
     Schedule2D,
     UHSAreal2D,
+    compute_sweep_efficiency,
     pressure_uniformity,
     scenario_five_spot,
     scenario_single_well,
@@ -43,6 +45,7 @@ from h2multisim.models.zero_d import (
     run_monte_carlo,
     schedule_cavern,
     schedule_porous_reservoir,
+    schedule_rough,
 )
 from h2multisim.thermo import (
     R_UNIVERSAL,
@@ -590,6 +593,32 @@ class TestH2MultiSimValidation(unittest.TestCase):
         result = UHSAreal2D(props, wells, eos=self.eos).run_schedule(sched, dt_days=0.5)
         self.assertLessEqual(max(result.per_well_q["W1"]), 1e-12)
         self.assertLess(result.metrics["mass_balance_error"], 1e-6)
+
+    # ── 34. Harvested Domain Scenarios & Sweep Efficiency ───────────────────
+    def test_34_rough_and_sweep_efficiency(self) -> None:
+        # 0D Rough schedule construction and execution
+        sched_rough = schedule_rough(bar_to_pa(150.0))
+        self.assertEqual(len(sched_rough), 10)
+        self.assertEqual(sched_rough[0].name, "cushion_fill")
+
+        # 1D Rough scenario
+        props_rough, controls_rough = rough_radial()
+        self.assertAlmostEqual(props_rough.P_init, bar_to_pa(150.0))
+        self.assertAlmostEqual(props_rough.T_init, 369.0)
+        self.assertEqual(len(controls_rough), 3)
+
+        # 2D Sweep efficiency calculation
+        p_init = bar_to_pa(100.0)
+        p_field_unperturbed = [p_init] * 16
+        self.assertAlmostEqual(compute_sweep_efficiency(p_field_unperturbed, p_init), 0.0)
+
+        # Perturbed pressure field (>1 bar threshold)
+        p_field_perturbed = [p_init] * 8 + [p_init + bar_to_pa(5.0)] * 8
+        self.assertAlmostEqual(compute_sweep_efficiency(p_field_perturbed, p_init), 0.5)
+
+        # 2D matrix format
+        p_matrix = [[p_init, p_init + bar_to_pa(5.0)], [p_init, p_init]]
+        self.assertAlmostEqual(compute_sweep_efficiency(p_matrix, p_init), 0.25)
 
 
 if __name__ == "__main__":
