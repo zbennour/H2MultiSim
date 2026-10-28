@@ -58,6 +58,12 @@ class ReservoirProperties:
     pore_model: PoreVolumeModel | None = None
     isotherm: IsothermModel | None = None
     m_sorbent: float = 0.0  # kg sorbent mass for MOF/adsorbent storage
+    volume_translation: float = 0.0  # m³/mol Peneloux volume translation (e.g. -4.0e-6)
+    peneloux: bool = False  # If True and volume_translation == 0, sets volume_translation = -4.0e-6
+
+    def __post_init__(self) -> None:
+        if self.peneloux and self.volume_translation == 0.0:
+            self.volume_translation = -4.0e-6
 
 
 # Alias for naming consistency
@@ -117,7 +123,11 @@ class UHSReservoir0D:
         tau_days: float | None = None,
     ) -> None:
         self.props = props
-        self.eos = eos or PengRobinsonH2()
+        if eos is None:
+            vt = getattr(props, "volume_translation", 0.0)
+            self.eos = PengRobinsonH2(volume_translation=vt)
+        else:
+            self.eos = eos
 
         if tau_days is None:
             tau_days = 3.0 if props.is_cavern else 30.0

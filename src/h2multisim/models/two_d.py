@@ -45,6 +45,12 @@ class Reservoir2DProps:
     ny: int  # grid cells in y
     tau_days: float = 30.0  # days thermal relaxation constant
     k_field: list[list[float]] | None = None
+    volume_translation: float = 0.0  # m³/mol Peneloux volume translation (e.g. -4.0e-6)
+    peneloux: bool = False  # If True and volume_translation == 0, sets volume_translation = -4.0e-6
+
+    def __post_init__(self) -> None:
+        if self.peneloux and self.volume_translation == 0.0:
+            self.volume_translation = -4.0e-6
 
 
 ReservoirProperties2D = Reservoir2DProps
@@ -132,7 +138,11 @@ class UHSAreal2D:
     ) -> None:
         self.props = props
         self.wells = wells
-        self.eos = eos or PengRobinsonH2()
+        if eos is None:
+            vt = getattr(props, "volume_translation", 0.0)
+            self.eos = PengRobinsonH2(volume_translation=vt)
+        else:
+            self.eos = eos
         self.omega = sor_omega
         self.max_iter = max_iter
         self.tol_Pa = tol_Pa

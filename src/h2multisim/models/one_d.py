@@ -42,6 +42,12 @@ class RadialReservoirProps:
     skin: float = 0.0  # mechanical skin factor
     outer_bc: str = "no_flow"  # 'no_flow' | 'const_pressure'
     tau_days: float = 30.0  # days thermal relaxation constant
+    volume_translation: float = 0.0  # m³/mol Peneloux volume translation (e.g. -4.0e-6)
+    peneloux: bool = False  # If True and volume_translation == 0, sets volume_translation = -4.0e-6
+
+    def __post_init__(self) -> None:
+        if self.peneloux and self.volume_translation == 0.0:
+            self.volume_translation = -4.0e-6
 
 
 ReservoirProperties1D = RadialReservoirProps
@@ -145,7 +151,11 @@ class UHSRadial1D:
     ) -> None:
         self.props = props
         self.N = N
-        self.eos = eos or PengRobinsonH2()
+        if eos is None:
+            vt = getattr(props, "volume_translation", 0.0)
+            self.eos = PengRobinsonH2(volume_translation=vt)
+        else:
+            self.eos = eos
         self.tau_s = props.tau_days * 86400.0
         self.max_picard = max_picard
         self.picard_tol_Pa = picard_tol_Pa

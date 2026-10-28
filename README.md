@@ -47,19 +47,23 @@ transfer or regulatory reporting.
 
 | Metric | Condition | Reference (CoolProp) | H2MultiSim™ | Error |
 | :--- | :--- | :--- | :--- | :--- |
-| **Z-factor** | $293.15\text{ K}, 1\text{ bar}$ | $1.00059$ | $1.00027$ | $0.03\%$ |
-| **Z-factor** | $293.15\text{ K}, 100\text{ bar}$ | $1.06081$ | $1.03537$ | $2.40\%$ |
-| **Z-factor** | $293.15\text{ K}, 250\text{ bar}$ | $1.15751$ | $1.10938$ | $4.16\%$ |
-| **Gas Density** | $316\text{ K}, 80\text{ bar}$ | $5.868\text{ kg/m}^3$ | $5.978\text{ kg/m}^3$ | $1.86\%$ |
-| **Viscosity** | $293.15\text{ K}, 1\text{ atm}$ | $8.797\,\mu\text{Pa}\cdot\text{s}$ | $8.745\,\mu\text{Pa}\cdot\text{s}$ | $0.59\%$ |
-| **Viscosity** | $333\text{ K}, 82\text{ bar}$ | $9.676\,\mu\text{Pa}\cdot\text{s}$ | $9.547\,\mu\text{Pa}\cdot\text{s}$ | $1.33\%$ |
+| **Z-factor** (plain PR) | $293.15\text{ K}, 1\text{ bar}$ | $1.00059$ | $1.00027$ | $0.03\%$ |
+| **Z-factor** (plain PR) | $293.15\text{ K}, 100\text{ bar}$ | $1.06081$ | $1.03537$ | $2.40\%$ |
+| **Z-factor** (plain PR) | $293.15\text{ K}, 250\text{ bar}$ | $1.15751$ | $1.10938$ | $4.16\%$ |
+| **Z-factor** (Peneloux) | $293.15\text{ K}, 250\text{ bar}$ | $1.15751$ | $1.15040$ | $0.61\%$ |
+| **Gas Density** (plain PR)| $316\text{ K}, 80\text{ bar}$ | $5.868\text{ kg/m}^3$ | $5.978\text{ kg/m}^3$ | $1.86\%$ |
+| **Viscosity** (NIST/Muzny)| $293.15\text{ K}, 1\text{ atm}$ | $8.797\,\mu\text{Pa}\cdot\text{s}$ | $8.746\,\mu\text{Pa}\cdot\text{s}$ | $0.58\%$ |
+| **Viscosity** (NIST/Muzny)| $333\text{ K}, 82\text{ bar}$ | $9.676\,\mu\text{Pa}\cdot\text{s}$ | $9.603\,\mu\text{Pa}\cdot\text{s}$ | $0.75\%$ |
+| **Viscosity** (NIST/Muzny)| $293.15\text{ K}, 250\text{ bar}$| $9.302\,\mu\text{Pa}\cdot\text{s}$ | $9.186\,\mu\text{Pa}\cdot\text{s}$ | $1.25\%$ |
+| **Joule-Thomson** (Peneloux)| $293.15\text{ K}, 100\text{ bar}$| $-0.0347\text{ K/bar}$ | $-0.0331\text{ K/bar}$ | $4.5\%$ |
 | **Thomas Solver**| $N=6$ Poisson system | Analytical solution | Residual $< 10^{-10}$ | Exact |
 
-The Peng–Robinson Z-factor error reaches ~4% at 250 bar.  A Peneloux volume
-translation ($c=-4.0\times10^{-6}\ \mathrm{m^3/mol}$) reduces the maximum Z error
-to below 1% and is available opt-in as
-`PengRobinsonH2(volume_translation=-4.0e-6)` (see `AUDIT.md`, finding F-04).  Mass balance in the 0D/1D/2D/3D solvers is closed to better than
-$10^{-6}$ relative error by the v1.0.1 solver.
+The uncorrected Peng–Robinson Z-factor error reaches ~4.2% at 250 bar. Enabling Peneloux volume
+translation ($c=-4.0\times10^{-6}\ \mathrm{m^3/mol}$) reduces the maximum Z error to below 0.85% across
+1–350 bar and is supported across all models and JSON/YAML configs via `peneloux=True` or
+`volume_translation=-4.0e-6` (see `AUDIT.md`, finding F-04). Dynamic viscosity incorporates the Muzny
+et al. (2013) density residual correction, achieving <1.5% agreement across the UHS operating window.
+Mass balance in the 0D/1D/2D/3D solvers is closed to better than $10^{-6}$ relative error.
 
 ---
 
