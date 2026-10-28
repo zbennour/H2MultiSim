@@ -24,7 +24,7 @@ def main() -> None:
     m = result.metrics
 
     print("=" * 60)
-    print("H2MultiSim™ 1D Radial Well Transient Results:")
+    print("H2MultiSim 1D Radial Well Transient Results:")
     print("=" * 60)
     print(f"Radial Cells             : {sim.N}")
     print(f"Drainage Radius          : {props.r_ext:.1f} m")

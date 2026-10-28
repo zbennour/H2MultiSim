@@ -36,7 +36,7 @@ def main() -> None:
     cv_t = pressure_uniformity(p_t)
 
     print("=" * 60)
-    print("H2MultiSim™ 2D Areal Five-Spot vs. Thief Zone:")
+    print("H2MultiSim 2D Areal Five-Spot vs. Thief Zone:")
     print("=" * 60)
     print(f"Homogeneous Working Gas Cycled : {res_homo.metrics['working_gas_t']:.1f} tonnes")
     print(f"Thief-Zone Working Gas Cycled  : {res_thief.metrics['working_gas_t']:.1f} tonnes")

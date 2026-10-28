@@ -34,7 +34,7 @@ def main() -> None:
     m = result.metrics
 
     print("=" * 60)
-    print("H2MultiSim™ 0D Salt Cavern Quickstart Results:")
+    print("H2MultiSim 0D Salt Cavern Quickstart Results:")
     print("=" * 60)
     print(f"Max Operating Pressure : {pa_to_bar(m['max_pressure_Pa']):.2f} bar")
     print(f"Min Operating Pressure : {pa_to_bar(m['min_pressure_Pa']):.2f} bar")
