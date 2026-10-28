@@ -169,6 +169,13 @@ If you use H2MultiSim™ in academic research or industrial feasibility studies,
 
 ---
 
+## Authors & Acknowledgments
+
+- **Ziad Bennour** ([@zbennour](https://github.com/zbennour)) — Architecture, multi-scale numerical engines (0D/1D/2D/3D), validation test suite, and package maintenance.
+- **kwkushan** — Original author of the foundational V1.3 analytical Peng-Robinson EOS formulation, single-cell lumped model prototype, and benchmark scenario definitions.
+
+---
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0 or later ([GPL-3.0-or-later](LICENSE)).
