@@ -72,6 +72,13 @@ class Schedule2D:
     duration_d: float  # days
     bhp_target: float  # Pa
     q_max: float  # kg/s per well limit
+    well_modes: dict[str, str] | None = None  # optional per-well override
+
+    def mode_for(self, well_name: str) -> str:
+        """Operating mode for a named well (falls back to the period mode)."""
+        if self.well_modes and well_name in self.well_modes:
+            return self.well_modes[well_name]
+        return self.mode
 
 
 SchedulePeriod2D = Schedule2D
@@ -118,8 +125,10 @@ class UHSAreal2D:
         wells: list[WellSpec2D],
         eos: PengRobinsonH2 | None = None,
         sor_omega: float = 1.5,
-        max_iter: int = 80,
-        tol_Pa: float = 10.0,
+        max_iter: int = 2000,
+        tol_Pa: float = 1.0e-4,
+        max_picard: int = 20,
+        picard_tol_Pa: float = 1.0e-4,
     ) -> None:
         self.props = props
         self.wells = wells
@@ -127,6 +136,8 @@ class UHSAreal2D:
         self.omega = sor_omega
         self.max_iter = max_iter
         self.tol_Pa = tol_Pa
+        self.max_picard = max_picard
+        self.picard_tol_Pa = picard_tol_Pa
         self.tau_s = props.tau_days * 86400.0
 
         self.nx = props.nx
@@ -186,104 +197,225 @@ class UHSAreal2D:
         mu = viscosity_h2(T[w.i][w.j], P[w.i][w.j])
         return 2.0 * math.pi * k_w * self.props.h * rho / (mu * ln_r)
 
+    def _solve_picard(
+        self,
+        P_old: list[list[float]],
+        T_old: list[list[float]],
+        ctrl: Schedule2D,
+        dt: float,
+        tx: list[list[float]],
+        ty: list[list[float]],
+        rho_old: list[list[float]],
+        rate_q: dict[str, float],
+        shut_wells: set[str],
+    ) -> tuple[list[list[float]], list[list[float]], dict[str, tuple[float, float]]]:
+        """Picard iteration on pressure and temperature for one time step."""
+        nx, ny = self.nx, self.ny
+        T_geo = self.props.T_init
+        Pk = [list(row) for row in P_old]
+        Tk = [list(row) for row in T_old]
+        wi_final: dict[str, float] = {w.name: 0.0 for w in self.wells}
+
+        for _picard in range(self.max_picard):
+            Tk = [
+                [
+                    coupled_temperature_update(
+                        T_old=T_old[i][j],
+                        P_old=max(P_old[i][j], 1.0),
+                        P_new=max(Pk[i][j], 1.0),
+                        T_geothermal=T_geo,
+                        dt_s=dt,
+                        tau_s=self.tau_s,
+                        eos=self.eos,
+                    )
+                    for j in range(ny)
+                ]
+                for i in range(nx)
+            ]
+            rho_k = [[self.eos.density(Pk[i][j], Tk[i][j]) for j in range(ny)] for i in range(nx)]
+            drho = [[self.eos.drho_dP(Pk[i][j], Tk[i][j]) for j in range(ny)] for i in range(nx)]
+
+            B = [[self.Vp * drho[i][j] / dt for j in range(ny)] for i in range(nx)]
+            rhs0 = [
+                [
+                    B[i][j] * Pk[i][j] - self.Vp * (rho_k[i][j] - rho_old[i][j]) / dt
+                    for j in range(ny)
+                ]
+                for i in range(nx)
+            ]
+
+            well_diag = [[0.0] * ny for _ in range(nx)]
+            well_rhs = [[0.0] * ny for _ in range(nx)]
+            wi_now: dict[str, float] = {}
+            for w in self.wells:
+                wi = self._well_index(w, Pk, Tk)
+                wi_now[w.name] = wi
+                mode_w = ctrl.mode_for(w.name)
+                if mode_w == "shut_in" or w.name in shut_wells:
+                    continue
+                if w.name in rate_q:
+                    well_rhs[w.i][w.j] += rate_q[w.name]
+                else:
+                    well_diag[w.i][w.j] += wi
+                    well_rhs[w.i][w.j] += wi * ctrl.bhp_target
+
+            P_new = [list(row) for row in Pk]
+            for _iter in range(self.max_iter):
+                max_change = 0.0
+                for i in range(nx):
+                    for j in range(ny):
+                        TxL = tx[i - 1][j] if i > 0 else 0.0
+                        TxR = tx[i][j] if i < nx - 1 else 0.0
+                        TyB = ty[i][j - 1] if j > 0 else 0.0
+                        TyT = ty[i][j] if j < ny - 1 else 0.0
+
+                        diag = B[i][j] + TxL + TxR + TyB + TyT + well_diag[i][j]
+                        rhs = rhs0[i][j] + well_rhs[i][j]
+
+                        if i > 0:
+                            rhs += TxL * P_new[i - 1][j]
+                        if i < nx - 1:
+                            rhs += TxR * P_new[i + 1][j]
+                        if j > 0:
+                            rhs += TyB * P_new[i][j - 1]
+                        if j < ny - 1:
+                            rhs += TyT * P_new[i][j + 1]
+
+                        P_gs = rhs / max(diag, 1e-30)
+                        P_sor = (1.0 - self.omega) * P_new[i][j] + self.omega * P_gs
+                        P_sor = max(P_sor, 1.0e3)
+
+                        change = abs(P_sor - P_new[i][j])
+                        max_change = max(max_change, change)
+                        P_new[i][j] = P_sor
+
+                if max_change < self.tol_Pa:
+                    break
+
+            change = max(abs(P_new[i][j] - Pk[i][j]) for i in range(nx) for j in range(ny))
+            Pk = P_new
+            if change < self.picard_tol_Pa:
+                break
+
+        # Make temperature exactly consistent with the converged pressure.
+        Tk = [
+            [
+                coupled_temperature_update(
+                    T_old=T_old[i][j],
+                    P_old=max(P_old[i][j], 1.0),
+                    P_new=max(Pk[i][j], 1.0),
+                    T_geothermal=T_geo,
+                    dt_s=dt,
+                    tau_s=self.tau_s,
+                    eos=self.eos,
+                )
+                for j in range(ny)
+            ]
+            for i in range(nx)
+        ]
+        for w in self.wells:
+            wi_final[w.name] = self._well_index(w, Pk, Tk)
+
+        per_well: dict[str, tuple[float, float]] = {}
+        for w in self.wells:
+            wi = wi_final[w.name]
+            mode_w = ctrl.mode_for(w.name)
+            P_w = Pk[w.i][w.j]
+            if mode_w == "shut_in" or w.name in shut_wells:
+                q = 0.0
+            elif w.name in rate_q:
+                q = rate_q[w.name]
+            else:
+                q = wi * (ctrl.bhp_target - P_w)
+            bhp = P_w + q / max(wi, 1e-30)
+            per_well[w.name] = (q, bhp)
+
+        return Pk, Tk, per_well
+
     def _solve_pressure(
         self,
         P_old: list[list[float]],
-        T: list[list[float]],
+        T_old: list[list[float]],
         ctrl: Schedule2D,
         dt: float,
-    ) -> tuple[list[list[float]], dict[str, tuple[float, float]]]:
+    ) -> tuple[list[list[float]], list[list[float]], dict[str, tuple[float, float]]]:
+        """
+        Solve one pressure/temperature step with an active-set well model.
+
+        Wells are first solved against their BHP targets; wells whose rate would
+        exceed ``q_max`` are switched to rate control, and wells that would flow
+        backwards are shut in.  The active set is re-evaluated until stable.  No
+        cell pressure is overwritten, so rates, BHPs and mass are consistent.
+        """
         nx, ny = self.nx, self.ny
-        phi = self.props.phi
-        Ct = self.props.Ct
+        tx = [[self._Tx(i, j, P_old, T_old) for j in range(ny)] for i in range(nx - 1)]
+        ty = [[self._Ty(i, j, P_old, T_old) for j in range(ny - 1)] for i in range(nx)]
+        rho_old = [
+            [self.eos.density(P_old[i][j], T_old[i][j]) for j in range(ny)] for i in range(nx)
+        ]
 
-        B = [[0.0] * ny for _ in range(nx)]
-        Tx = [[0.0] * ny for _ in range(nx - 1)]
-        Ty_arr = [[0.0] * (ny - 1) for _ in range(nx)]
-
-        for i in range(nx):
-            for j in range(ny):
-                rho_ij = self.eos.density(P_old[i][j], T[i][j])
-                B[i][j] = phi * Ct * self.Vp * rho_ij / dt
-
-        for i in range(nx - 1):
-            for j in range(ny):
-                Tx[i][j] = self._Tx(i, j, P_old, T)
-
-        for i in range(nx):
-            for j in range(ny - 1):
-                Ty_arr[i][j] = self._Ty(i, j, P_old, T)
-
-        wi_dict = {w.name: self._well_index(w, P_old, T) for w in self.wells}
-        per_well: dict[str, tuple[float, float]] = {}
+        rate_q: dict[str, float] = {}
+        shut_wells: set[str] = set()
+        for w in self.wells:
+            mode_w = ctrl.mode_for(w.name)
+            if mode_w == "shut_in":
+                continue
+            wi = self._well_index(w, P_old, T_old)
+            P_w = P_old[w.i][w.j]
+            q_try = wi * (ctrl.bhp_target - P_w)
+            if (mode_w == "inject" and q_try < 0.0) or (mode_w == "withdraw" and q_try > 0.0):
+                shut_wells.add(w.name)
+            elif ctrl.q_max > 0.0 and abs(q_try) > ctrl.q_max:
+                rate_q[w.name] = math.copysign(ctrl.q_max, q_try)
 
         P_new = [list(row) for row in P_old]
+        T_new = [list(row) for row in T_old]
+        per_well: dict[str, tuple[float, float]] = {}
+        for _attempt in range(5):
+            P_new, T_new, per_well = self._solve_picard(
+                P_old, T_old, ctrl, dt, tx, ty, rho_old, rate_q, shut_wells
+            )
+            changed = False
 
-        for _iter in range(self.max_iter):
-            max_change = 0.0
+            # A capped well whose BHP constraint is satisfied is not actually
+            # rate-limited: revert it to BHP control.
+            for name in list(rate_q):
+                w = next(ww for ww in self.wells if ww.name == name)
+                mode_w = ctrl.mode_for(name)
+                P_w = P_new[w.i][w.j]
+                binding = (mode_w == "inject" and P_w <= ctrl.bhp_target) or (
+                    mode_w == "withdraw" and P_w >= ctrl.bhp_target
+                )
+                if not binding:
+                    del rate_q[name]
+                    changed = True
 
-            for i in range(nx):
-                for j in range(ny):
-                    TxL = Tx[i - 1][j] if i > 0 else 0.0
-                    TxR = Tx[i][j] if i < nx - 1 else 0.0
-                    TyB = Ty_arr[i][j - 1] if j > 0 else 0.0
-                    TyT = Ty_arr[i][j] if j < ny - 1 else 0.0
+            # Re-open shut wells if the pressure has moved back to the side
+            # where the well can flow in its intended direction.
+            for name in list(shut_wells):
+                w = next(ww for ww in self.wells if ww.name == name)
+                mode_w = ctrl.mode_for(name)
+                P_w = P_new[w.i][w.j]
+                if (mode_w == "inject" and P_w < ctrl.bhp_target) or (
+                    mode_w == "withdraw" and P_w > ctrl.bhp_target
+                ):
+                    shut_wells.remove(name)
+                    changed = True
 
-                    diag = B[i][j] + TxL + TxR + TyB + TyT
-                    rhs = B[i][j] * P_old[i][j]
+            # No-backflow constraint for BHP-controlled wells.
+            for w in self.wells:
+                mode_w = ctrl.mode_for(w.name)
+                if mode_w == "shut_in" or w.name in rate_q or w.name in shut_wells:
+                    continue
+                q_w = per_well[w.name][0]
+                if (mode_w == "inject" and q_w < 0.0) or (mode_w == "withdraw" and q_w > 0.0):
+                    shut_wells.add(w.name)
+                    changed = True
 
-                    if i > 0:
-                        rhs += TxL * P_new[i - 1][j]
-                    if i < nx - 1:
-                        rhs += TxR * P_new[i + 1][j]
-                    if j > 0:
-                        rhs += TyB * P_new[i][j - 1]
-                    if j < ny - 1:
-                        rhs += TyT * P_new[i][j + 1]
-
-                    w_obj = next((w for w in self.wells if w.i == i and w.j == j), None)
-                    if w_obj is not None and ctrl.mode != "shut_in":
-                        wi = wi_dict.get(w_obj.name, 0.0)
-                        diag += wi
-                        rhs += wi * ctrl.bhp_target
-
-                    if diag < 1e-30:
-                        P_gs = P_old[i][j]
-                    else:
-                        P_gs = rhs / diag
-
-                    P_sor = (1.0 - self.omega) * P_new[i][j] + self.omega * P_gs
-                    P_sor = max(P_sor, 1.0e3)
-
-                    if w_obj is not None:
-                        if ctrl.mode == "inject":
-                            P_sor = min(P_sor, ctrl.bhp_target)
-                        elif ctrl.mode == "withdraw":
-                            P_sor = max(P_sor, ctrl.bhp_target)
-
-                    change = abs(P_sor - P_new[i][j])
-                    max_change = max(max_change, change)
-                    P_new[i][j] = P_sor
-
-            if max_change < self.tol_Pa:
+            if not changed:
                 break
 
-        for w in self.wells:
-            wi = wi_dict[w.name]
-            P_w = P_new[w.i][w.j]
-            if ctrl.mode == "inject":
-                dp = max(ctrl.bhp_target - P_w, 0.0)
-                q = min(wi * dp, ctrl.q_max)
-                q = max(q, 0.0)
-            elif ctrl.mode == "withdraw":
-                dp = max(P_w - ctrl.bhp_target, 0.0)
-                q = -min(wi * dp, ctrl.q_max)
-                q = min(q, 0.0)
-            else:
-                q = 0.0
-            per_well[w.name] = (q, P_w)
-
-        return P_new, per_well
+        return P_new, T_new, per_well
 
     def _update_temperature(
         self,
@@ -313,7 +445,6 @@ class UHSAreal2D:
         dt_days: float = 0.2,
         snap_days: list[float] | None = None,
     ) -> Result2D:
-        dt = dt_days * 86400.0
         nx, ny = self.nx, self.ny
 
         P = [[self.props.P_init] * ny for _ in range(nx)]
@@ -334,19 +465,24 @@ class UHSAreal2D:
         P_min = self.props.P_init
         T_max = self.props.T_init
         T_min = self.props.T_init
+        m_initial = sum(
+            self.eos.density(self.props.P_init, self.props.T_init) * self.Vp
+            for _ in range(nx)
+            for _ in range(ny)
+        )
 
         for ctrl in schedule:
             n_steps = max(int(ctrl.duration_d / dt_days), 1)
+            dt_act = ctrl.duration_d * 86400.0 / n_steps
             for _ in range(n_steps):
-                P_new, per_well = self._solve_pressure(P, T, ctrl, dt)
-                T_new = self._update_temperature(P, P_new, T, dt)
-                t_d += dt_days
+                P_new, T_new, per_well = self._solve_pressure(P, T, ctrl, dt_act)
+                t_d += dt_act / 86400.0
 
-                total_q = sum(q for q, _ in per_well.values())
-                if total_q >= 0.0:
-                    cum_inj += total_q * dt
-                else:
-                    cum_wdr += (-total_q) * dt
+                q_inj = sum(max(q, 0.0) for q, _ in per_well.values())
+                q_wdr = sum(max(-q, 0.0) for q, _ in per_well.values())
+                cum_inj += q_inj * dt_act
+                cum_wdr += q_wdr * dt_act
+                total_q = q_inj - q_wdr
 
                 for w in self.wells:
                     q_w, bhp_w = per_well[w.name]
@@ -390,6 +526,9 @@ class UHSAreal2D:
 
         m_max = max(result.mass_t) if result.mass_t else 0.0
         m_min = min(result.mass_t) if result.mass_t else 0.0
+        m_final_kg = result.mass_t[-1] * 1000.0 if result.mass_t else m_initial
+        net_kg = cum_inj - cum_wdr
+        mb_err = abs((m_final_kg - m_initial) - net_kg) / max(abs(net_kg), 1.0)
         result.metrics = {
             "max_P_bar": pa_to_bar(P_max),
             "min_P_bar": pa_to_bar(P_min),
@@ -400,9 +539,13 @@ class UHSAreal2D:
             "working_gas_t": m_max - m_min,
             "cushion_gas_t": m_min,
             "storage_eff_pct": (m_max - m_min) / max(m_max, 1e-9) * 100.0,
+            "initial_mass_t": kg_to_tonnes(m_initial),
+            "final_mass_t": kg_to_tonnes(m_final_kg),
             "total_injected_t": kg_to_tonnes(cum_inj),
             "total_withdrawn_t": kg_to_tonnes(cum_wdr),
-            "cycled_gas_t": kg_to_tonnes(cum_inj),
+            "net_stored_t": kg_to_tonnes(net_kg),
+            "cycled_gas_t": kg_to_tonnes(cum_inj + cum_wdr),
+            "mass_balance_error": mb_err,
         }
         return result
 
@@ -457,6 +600,28 @@ def _schedule_porous_2d(P_ref: float) -> list[Schedule2D]:
     ]
 
 
+def _five_spot_schedule(P_ref: float) -> list[Schedule2D]:
+    """Five-spot schedule: four corner injectors, one central producer.
+
+    The original scenario applied a single mode to all five wells, which made
+    the "producer" inject and the "injectors" produce.  Per-well overrides keep
+    the pattern physically meaningful while preserving the period API.
+    """
+    bar = 1.0e5
+    P_max = min(1.35 * P_ref, P_ref + 50.0 * bar)
+    P_min = max(0.60 * P_ref, P_ref - 40.0 * bar)
+    qmax = 35.0
+    names = ["INJ_SW", "INJ_NW", "INJ_SE", "INJ_NE", "CTRE"]
+    inj_modes = {n: ("inject" if n.startswith("INJ") else "shut_in") for n in names}
+    wdr_modes = {n: ("withdraw" if n == "CTRE" else "shut_in") for n in names}
+    shut_modes = {n: "shut_in" for n in names}
+    return [
+        Schedule2D("inject_30d", "inject", 30.0, P_max, qmax, well_modes=inj_modes),
+        Schedule2D("withdraw_30d", "withdraw", 30.0, P_min, qmax, well_modes=wdr_modes),
+        Schedule2D("shut_in_10d", "shut_in", 10.0, 0.0, 0.0, well_modes=shut_modes),
+    ]
+
+
 def scenario_single_well(
     nx: int = 15, ny: int = 15
 ) -> tuple[Reservoir2DProps, list[WellSpec2D], list[Schedule2D]]:
@@ -477,7 +642,7 @@ def scenario_five_spot(
         WellSpec2D(i=nx - 1, j=ny - 1, name="INJ_NE"),
         WellSpec2D(i=nx // 2, j=ny // 2, name="CTRE"),
     ]
-    sched = _schedule_porous_2d(props.P_init)
+    sched = _five_spot_schedule(props.P_init)
     return props, wells, sched
 
 
@@ -495,7 +660,7 @@ def scenario_thief_zone(
         WellSpec2D(i=nx - 1, j=ny - 1, name="INJ_NE"),
         WellSpec2D(i=nx // 2, j=ny // 2, name="CTRE"),
     ]
-    sched = _schedule_porous_2d(props.P_init)
+    sched = _five_spot_schedule(props.P_init)
     return props, wells, sched
 
 

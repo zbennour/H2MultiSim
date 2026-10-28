@@ -126,8 +126,10 @@ class UHSFieldScale3D:
         wells: list[WellSpec3D],
         eos: PengRobinsonH2 | None = None,
         sor_omega: float = 1.5,
-        max_iter: int = 80,
-        tol_Pa: float = 50.0,
+        max_iter: int = 2000,
+        tol_Pa: float = 1.0e-4,
+        max_picard: int = 20,
+        picard_tol_Pa: float = 1.0e-4,
     ) -> None:
         self.props = props
         self.wells = wells
@@ -135,6 +137,8 @@ class UHSFieldScale3D:
         self.omega = sor_omega
         self.max_iter = max_iter
         self.tol_Pa = tol_Pa
+        self.max_picard = max_picard
+        self.picard_tol_Pa = picard_tol_Pa
         self.tau_s = props.tau_days * 86400.0
         self.g = G_GRAV
 
@@ -231,50 +235,181 @@ class UHSFieldScale3D:
         rho_h = 2.0 * rhoD * rhoU / (rhoD + rhoU + 1e-30)
         return rho_h * self.g * self.dz
 
-    def _solve_pressure(
+    def _solve_picard(
         self,
         P_old: list[list[list[float]]],
-        T: list[list[list[float]]],
+        T_old: list[list[list[float]]],
         ctrl: Schedule3D,
         dt: float,
-    ) -> tuple[list[list[list[float]]], dict[str, tuple[float, float]]]:
+        tx: list[list[list[float]]],
+        ty: list[list[list[float]]],
+        tz: list[list[list[float]]],
+        gz: list[list[list[float]]],
+        rho_old: list[list[list[float]]],
+        rate_q: dict[str, float],
+        shut_wells: set[str],
+    ) -> tuple[
+        list[list[list[float]]],
+        list[list[list[float]]],
+        dict[str, tuple[float, float]],
+    ]:
+        """Picard iteration on pressure and temperature for one 3D time step."""
         nx, ny, nz = self.nx, self.ny, self.nz
-        phi = self.props.phi
-        Ct = self.props.Ct
+        T_geo = self.props.T_init
+        Pk = [[list(P_old[i][j]) for j in range(ny)] for i in range(nx)]
+        Tk = [[list(T_old[i][j]) for j in range(ny)] for i in range(nx)]
 
-        tx = [
-            [
-                [self._Tx(P_old, T, i, j, k) if i < nx - 1 else 0.0 for k in range(nz)]
-                for j in range(ny)
+        for _picard in range(self.max_picard):
+            Tk = [
+                [
+                    [
+                        coupled_temperature_update(
+                            T_old=T_old[i][j][k],
+                            P_old=max(P_old[i][j][k], 1.0),
+                            P_new=max(Pk[i][j][k], 1.0),
+                            T_geothermal=T_geo,
+                            dt_s=dt,
+                            tau_s=self.tau_s,
+                            eos=self.eos,
+                        )
+                        for k in range(nz)
+                    ]
+                    for j in range(ny)
+                ]
+                for i in range(nx)
             ]
-            for i in range(nx)
-        ]
-        ty = [
-            [
-                [self._Ty(P_old, T, i, j, k) if j < ny - 1 else 0.0 for k in range(nz)]
-                for j in range(ny)
+            rho_k = [
+                [[self.eos.density(Pk[i][j][k], Tk[i][j][k]) for k in range(nz)] for j in range(ny)]
+                for i in range(nx)
             ]
-            for i in range(nx)
-        ]
-        tz = [
-            [
-                [self._Tz(P_old, T, i, j, k) if k < nz - 1 else 0.0 for k in range(nz)]
-                for j in range(ny)
+            drho = [
+                [[self.eos.drho_dP(Pk[i][j][k], Tk[i][j][k]) for k in range(nz)] for j in range(ny)]
+                for i in range(nx)
             ]
-            for i in range(nx)
-        ]
-        gz = [
-            [
-                [self._gravity_dp(P_old, T, i, j, k) if k < nz - 1 else 0.0 for k in range(nz)]
-                for j in range(ny)
-            ]
-            for i in range(nx)
-        ]
 
-        B = [
+            B = [
+                [[self.Vp * drho[i][j][k] / dt for k in range(nz)] for j in range(ny)]
+                for i in range(nx)
+            ]
+            rhs0 = [
+                [
+                    [
+                        B[i][j][k] * Pk[i][j][k]
+                        - self.Vp * (rho_k[i][j][k] - rho_old[i][j][k]) / dt
+                        for k in range(nz)
+                    ]
+                    for j in range(ny)
+                ]
+                for i in range(nx)
+            ]
+
+            well_diag = [[[0.0] * nz for _ in range(ny)] for _ in range(nx)]
+            well_rhs = [[[0.0] * nz for _ in range(ny)] for _ in range(nx)]
+            wi_now: dict[str, dict[int, float]] = {}
+            for w in self.wells:
+                wi_now[w.name] = {}
+                for kl in range(w.k_min, w.k_max + 1):
+                    if 0 <= kl < nz:
+                        wi_now[w.name][kl] = self._well_index(w, Pk, Tk, kl)
+                if ctrl.mode == "shut_in" or w.name in shut_wells:
+                    continue
+                if w.name in rate_q:
+                    sum_wi = sum(wi_now[w.name].values())
+                    if sum_wi <= 0.0:
+                        continue
+                    sum_wiP = sum(wi * Pk[w.i][w.j][kl] for kl, wi in wi_now[w.name].items())
+                    bhp_rc = (rate_q[w.name] + sum_wiP) / sum_wi
+                    for kl, wi in wi_now[w.name].items():
+                        well_rhs[w.i][w.j][kl] += wi * (bhp_rc - Pk[w.i][w.j][kl])
+                else:
+                    for kl, wi in wi_now[w.name].items():
+                        well_diag[w.i][w.j][kl] += wi
+                        well_rhs[w.i][w.j][kl] += wi * ctrl.bhp_target
+
+            P_new = [[list(Pk[i][j]) for j in range(ny)] for i in range(nx)]
+            for _it in range(self.max_iter):
+                max_change = 0.0
+                for parity in (0, 1):
+                    for i in range(nx):
+                        for j in range(ny):
+                            for k in range(nz):
+                                if (i + j + k) % 2 != parity:
+                                    continue
+
+                                TxL = tx[i - 1][j][k] if i > 0 else 0.0
+                                TxR = tx[i][j][k] if i < nx - 1 else 0.0
+                                TyB = ty[i][j - 1][k] if j > 0 else 0.0
+                                TyT = ty[i][j][k] if j < ny - 1 else 0.0
+                                TzD = tz[i][j][k - 1] if k > 0 else 0.0
+                                TzU = tz[i][j][k] if k < nz - 1 else 0.0
+                                gD = gz[i][j][k - 1] if k > 0 else 0.0
+                                gU = gz[i][j][k] if k < nz - 1 else 0.0
+
+                                diag = (
+                                    B[i][j][k]
+                                    + TxL
+                                    + TxR
+                                    + TyB
+                                    + TyT
+                                    + TzD
+                                    + TzU
+                                    + well_diag[i][j][k]
+                                )
+                                rhs = rhs0[i][j][k] + well_rhs[i][j][k]
+
+                                if i > 0:
+                                    rhs += TxL * P_new[i - 1][j][k]
+                                if i < nx - 1:
+                                    rhs += TxR * P_new[i + 1][j][k]
+                                if j > 0:
+                                    rhs += TyB * P_new[i][j - 1][k]
+                                if j < ny - 1:
+                                    rhs += TyT * P_new[i][j + 1][k]
+                                # Φ = P + ρgz; flux from k to k+1 is
+                                # T·(P_k - P_{k+1} - ρgΔz).  Hence the lower
+                                # neighbour contributes (P_{k-1} - gD) and the
+                                # upper neighbour (P_{k+1} + gU).  The previous
+                                # signs were inverted, producing an unstable
+                                # (top-heavy) hydrostatic profile.
+                                if k > 0:
+                                    rhs += TzD * (P_new[i][j][k - 1] - gD)
+                                if k < nz - 1:
+                                    rhs += TzU * (P_new[i][j][k + 1] + gU)
+
+                                P_gs = rhs / max(diag, 1e-30)
+                                P_sor = (1.0 - self.omega) * P_new[i][j][k] + self.omega * P_gs
+                                P_sor = max(P_sor, 1.0e3)
+
+                                change = abs(P_sor - P_new[i][j][k])
+                                max_change = max(max_change, change)
+                                P_new[i][j][k] = P_sor
+
+                if max_change < self.tol_Pa:
+                    break
+
+            change = max(
+                abs(P_new[i][j][k] - Pk[i][j][k])
+                for i in range(nx)
+                for j in range(ny)
+                for k in range(nz)
+            )
+            Pk = P_new
+            if change < self.picard_tol_Pa:
+                break
+
+        # Consistent final temperature and well indices.
+        Tk = [
             [
                 [
-                    phi * Ct * self.Vp * self.eos.density(P_old[i][j][k], T[i][j][k]) / dt
+                    coupled_temperature_update(
+                        T_old=T_old[i][j][k],
+                        P_old=max(P_old[i][j][k], 1.0),
+                        P_new=max(Pk[i][j][k], 1.0),
+                        T_geothermal=T_geo,
+                        dt_s=dt,
+                        tau_s=self.tau_s,
+                        eos=self.eos,
+                    )
                     for k in range(nz)
                 ]
                 for j in range(ny)
@@ -282,95 +417,150 @@ class UHSFieldScale3D:
             for i in range(nx)
         ]
 
-        wi_layers: dict[str, dict[int, float]] = {}
-        for w in self.wells:
-            wi_layers[w.name] = {}
-            for kl in range(w.k_min, w.k_max + 1):
-                if 0 <= kl < nz:
-                    wi_layers[w.name][kl] = self._well_index(w, P_old, T, kl)
-
-        perf_map: dict[tuple[int, int, int], str] = {}
-        for w in self.wells:
-            for kl in range(w.k_min, w.k_max + 1):
-                if 0 <= kl < nz:
-                    perf_map[(w.i, w.j, kl)] = w.name
-
-        P_new = [[list(P_old[i][j]) for j in range(ny)] for i in range(nx)]
-
-        for _it in range(self.max_iter):
-            max_change = 0.0
-            for parity in (0, 1):
-                for i in range(nx):
-                    for j in range(ny):
-                        for k in range(nz):
-                            if (i + j + k) % 2 != parity:
-                                continue
-
-                            TxL = tx[i - 1][j][k] if i > 0 else 0.0
-                            TxR = tx[i][j][k] if i < nx - 1 else 0.0
-                            TyB = ty[i][j - 1][k] if j > 0 else 0.0
-                            TyT = ty[i][j][k] if j < ny - 1 else 0.0
-                            TzD = tz[i][j][k - 1] if k > 0 else 0.0
-                            TzU = tz[i][j][k] if k < nz - 1 else 0.0
-                            gD = gz[i][j][k - 1] if k > 0 else 0.0
-                            gU = gz[i][j][k] if k < nz - 1 else 0.0
-
-                            diag = B[i][j][k] + TxL + TxR + TyB + TyT + TzD + TzU
-                            rhs = B[i][j][k] * P_old[i][j][k]
-
-                            if i > 0:
-                                rhs += TxL * P_new[i - 1][j][k]
-                            if i < nx - 1:
-                                rhs += TxR * P_new[i + 1][j][k]
-                            if j > 0:
-                                rhs += TyB * P_new[i][j - 1][k]
-                            if j < ny - 1:
-                                rhs += TyT * P_new[i][j + 1][k]
-                            if k > 0:
-                                rhs += TzD * (P_new[i][j][k - 1] + gD)
-                            if k < nz - 1:
-                                rhs += TzU * (P_new[i][j][k + 1] - gU)
-
-                            wname = perf_map.get((i, j, k))
-                            if wname is not None and ctrl.mode != "shut_in":
-                                wi = wi_layers[wname].get(k, 0.0)
-                                diag += wi
-                                rhs += wi * ctrl.bhp_target
-
-                            P_gs = rhs / max(diag, 1e-30)
-                            P_sor = (1.0 - self.omega) * P_new[i][j][k] + self.omega * P_gs
-                            P_sor = max(P_sor, 1.0e3)
-
-                            if wname is not None:
-                                if ctrl.mode == "inject":
-                                    P_sor = min(P_sor, ctrl.bhp_target)
-                                elif ctrl.mode == "withdraw":
-                                    P_sor = max(P_sor, ctrl.bhp_target)
-
-                            change = abs(P_sor - P_new[i][j][k])
-                            max_change = max(max_change, change)
-                            P_new[i][j][k] = P_sor
-
-            if max_change < self.tol_Pa:
-                break
-
         per_well: dict[str, tuple[float, float]] = {}
         for w in self.wells:
-            q_total = 0.0
-            for kl in range(w.k_min, w.k_max + 1):
-                if 0 <= kl < nz:
-                    wi = wi_layers[w.name].get(kl, 0.0)
-                    P_w = P_new[w.i][w.j][kl]
-                    if ctrl.mode == "inject":
-                        dp = max(ctrl.bhp_target - P_w, 0.0)
-                        q_total += min(wi * dp, ctrl.q_max)
-                    elif ctrl.mode == "withdraw":
-                        dp = max(P_w - ctrl.bhp_target, 0.0)
-                        q_total -= min(wi * dp, ctrl.q_max)
-            BHP_rep = P_new[w.i][w.j][(w.k_min + w.k_max) // 2]
-            per_well[w.name] = (q_total, BHP_rep)
+            wi_layers = {
+                kl: self._well_index(w, Pk, Tk, kl)
+                for kl in range(w.k_min, w.k_max + 1)
+                if 0 <= kl < nz
+            }
+            k_mid = (w.k_min + w.k_max) // 2
+            if ctrl.mode == "shut_in" or w.name in shut_wells:
+                q_total = 0.0
+                bhp = Pk[w.i][w.j][k_mid]
+            elif w.name in rate_q:
+                q_total = rate_q[w.name]
+                sum_wi = sum(wi_layers.values())
+                if sum_wi > 0.0:
+                    sum_wiP = sum(wi * Pk[w.i][w.j][kl] for kl, wi in wi_layers.items())
+                    bhp = (q_total + sum_wiP) / sum_wi
+                else:
+                    bhp = Pk[w.i][w.j][k_mid]
+            else:
+                q_total = sum(
+                    wi * (ctrl.bhp_target - Pk[w.i][w.j][kl]) for kl, wi in wi_layers.items()
+                )
+                bhp = ctrl.bhp_target
+            per_well[w.name] = (q_total, bhp)
 
-        return P_new, per_well
+        return Pk, Tk, per_well
+
+    def _solve_pressure(
+        self,
+        P_old: list[list[list[float]]],
+        T_old: list[list[list[float]]],
+        ctrl: Schedule3D,
+        dt: float,
+    ) -> tuple[
+        list[list[list[float]]],
+        list[list[list[float]]],
+        dict[str, tuple[float, float]],
+    ]:
+        """
+        Solve one pressure/temperature step with an active-set well model.
+
+        The total well rate is capped (not each perforation separately), and a
+        rate-controlled well is distributed over its perforations through a
+        single implied bottom-hole pressure.  Cell pressures are never
+        overwritten, so rates, BHPs and mass remain consistent.
+        """
+        nx, ny, nz = self.nx, self.ny, self.nz
+        tx = [
+            [
+                [self._Tx(P_old, T_old, i, j, k) if i < nx - 1 else 0.0 for k in range(nz)]
+                for j in range(ny)
+            ]
+            for i in range(nx)
+        ]
+        ty = [
+            [
+                [self._Ty(P_old, T_old, i, j, k) if j < ny - 1 else 0.0 for k in range(nz)]
+                for j in range(ny)
+            ]
+            for i in range(nx)
+        ]
+        tz = [
+            [
+                [self._Tz(P_old, T_old, i, j, k) if k < nz - 1 else 0.0 for k in range(nz)]
+                for j in range(ny)
+            ]
+            for i in range(nx)
+        ]
+        gz = [
+            [
+                [self._gravity_dp(P_old, T_old, i, j, k) if k < nz - 1 else 0.0 for k in range(nz)]
+                for j in range(ny)
+            ]
+            for i in range(nx)
+        ]
+        rho_old = [
+            [
+                [self.eos.density(P_old[i][j][k], T_old[i][j][k]) for k in range(nz)]
+                for j in range(ny)
+            ]
+            for i in range(nx)
+        ]
+
+        rate_q: dict[str, float] = {}
+        shut_wells: set[str] = set()
+        if ctrl.mode != "shut_in":
+            for w in self.wells:
+                q_try = 0.0
+                for kl in range(w.k_min, w.k_max + 1):
+                    if 0 <= kl < nz:
+                        wi = self._well_index(w, P_old, T_old, kl)
+                        q_try += wi * (ctrl.bhp_target - P_old[w.i][w.j][kl])
+                if (ctrl.mode == "inject" and q_try < 0.0) or (
+                    ctrl.mode == "withdraw" and q_try > 0.0
+                ):
+                    shut_wells.add(w.name)
+                elif ctrl.q_max > 0.0 and abs(q_try) > ctrl.q_max:
+                    rate_q[w.name] = math.copysign(ctrl.q_max, q_try)
+
+        P_new = [[list(P_old[i][j]) for j in range(ny)] for i in range(nx)]
+        T_new = [[list(T_old[i][j]) for j in range(ny)] for i in range(nx)]
+        per_well: dict[str, tuple[float, float]] = {}
+        for _attempt in range(5):
+            P_new, T_new, per_well = self._solve_picard(
+                P_old, T_old, ctrl, dt, tx, ty, tz, gz, rho_old, rate_q, shut_wells
+            )
+            changed = False
+
+            for name in list(rate_q):
+                w = next(ww for ww in self.wells if ww.name == name)
+                bhp_rc = per_well[name][1]
+                binding = (ctrl.mode == "inject" and bhp_rc <= ctrl.bhp_target) or (
+                    ctrl.mode == "withdraw" and bhp_rc >= ctrl.bhp_target
+                )
+                if not binding:
+                    del rate_q[name]
+                    changed = True
+
+            for name in list(shut_wells):
+                w = next(ww for ww in self.wells if ww.name == name)
+                q_try = sum(
+                    self._well_index(w, P_new, T_new, kl) * (ctrl.bhp_target - P_new[w.i][w.j][kl])
+                    for kl in range(w.k_min, w.k_max + 1)
+                    if 0 <= kl < nz
+                )
+                if (ctrl.mode == "inject" and q_try > 0.0) or (
+                    ctrl.mode == "withdraw" and q_try < 0.0
+                ):
+                    shut_wells.remove(name)
+                    changed = True
+
+            for w in self.wells:
+                if ctrl.mode == "shut_in" or w.name in rate_q or w.name in shut_wells:
+                    continue
+                q_w = per_well[w.name][0]
+                if (ctrl.mode == "inject" and q_w < 0.0) or (ctrl.mode == "withdraw" and q_w > 0.0):
+                    shut_wells.add(w.name)
+                    changed = True
+
+            if not changed:
+                break
+
+        return P_new, T_new, per_well
 
     def _update_temperature(
         self,
@@ -474,15 +664,14 @@ class UHSFieldScale3D:
 
             for _ in range(n_steps):
                 P_old = [[list(P[i][j]) for j in range(ny)] for i in range(nx)]
-                P, per_well = self._solve_pressure(P_old, T, ctrl, dt_act)
-                T = self._update_temperature(P_old, P, T, dt_act)
+                P, T, per_well = self._solve_pressure(P_old, T, ctrl, dt_act)
                 t += dt_act
 
-                q_tot = sum(q for q, _ in per_well.values())
-                if q_tot >= 0.0:
-                    cum_inj += q_tot * dt_act
-                else:
-                    cum_wdr -= q_tot * dt_act
+                q_inj = sum(max(q, 0.0) for q, _ in per_well.values())
+                q_wdr = sum(max(-q, 0.0) for q, _ in per_well.values())
+                cum_inj += q_inj * dt_act
+                cum_wdr += q_wdr * dt_act
+                q_tot = q_inj - q_wdr
 
                 P_flat = [P[i][j][k] for i in range(nx) for j in range(ny) for k in range(nz)]
                 T_flat = [T[i][j][k] for i in range(nx) for j in range(ny) for k in range(nz)]
@@ -523,6 +712,10 @@ class UHSFieldScale3D:
 
         m_max = max(result.mass_t) if result.mass_t else 0.0
         m_min = min(result.mass_t) if result.mass_t else 0.0
+        m_initial_kg = result.mass_t[0] * 1000.0 if result.mass_t else 0.0
+        m_final_kg = result.mass_t[-1] * 1000.0 if result.mass_t else 0.0
+        net_kg = cum_inj - cum_wdr
+        mb_err = abs((m_final_kg - m_initial_kg) - net_kg) / max(abs(net_kg), 1.0)
         result.metrics = {
             "max_P_bar": pa_to_bar(P_max),
             "min_P_bar": pa_to_bar(P_min),
@@ -533,9 +726,13 @@ class UHSFieldScale3D:
             "working_gas_t": m_max - m_min,
             "cushion_gas_t": m_min,
             "storage_eff_pct": (m_max - m_min) / max(m_max, 1e-9) * 100.0,
+            "initial_mass_t": kg_to_tonnes(m_initial_kg),
+            "final_mass_t": kg_to_tonnes(m_final_kg),
             "total_injected_t": kg_to_tonnes(cum_inj),
             "total_withdrawn_t": kg_to_tonnes(cum_wdr),
-            "cycled_gas_t": kg_to_tonnes(cum_inj),
+            "net_stored_t": kg_to_tonnes(net_kg),
+            "cycled_gas_t": kg_to_tonnes(cum_inj + cum_wdr),
+            "mass_balance_error": mb_err,
         }
         return result
 

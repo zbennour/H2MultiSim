@@ -12,6 +12,7 @@ import math
 import os
 import sys
 import unittest
+from pathlib import Path
 
 from h2multisim import __version__
 from h2multisim.models.one_d import (
@@ -48,8 +49,20 @@ from h2multisim.models.zero_d import (
 from h2multisim.units import pa_to_bar
 
 
+def _require_scenario(scale: str, scenario: str, allowed: tuple[str, ...]) -> bool:
+    if scenario in allowed:
+        return True
+    print(
+        f"Error: unknown {scale} scenario {scenario!r}. Choose from: {', '.join(allowed)}",
+        file=sys.stderr,
+    )
+    return False
+
+
 def _run_0d(args: argparse.Namespace) -> int:
     scenario = args.scenario or "teesside"
+    if not _require_scenario("0D", scenario, ("teesside", "rough", "okoroafor")):
+        return 2
     out_dir = args.out_dir or "output"
     os.makedirs(out_dir, exist_ok=True)
 
@@ -118,6 +131,9 @@ def _run_0d(args: argparse.Namespace) -> int:
 
 
 def _run_1d(args: argparse.Namespace) -> int:
+    if args.scenario is not None and args.scenario != "okoroafor":
+        _require_scenario("1D", args.scenario, ("okoroafor",))
+        return 2
     out_dir = args.out_dir or "output"
     os.makedirs(out_dir, exist_ok=True)
     dt_days = args.dt_days or 0.2
@@ -147,6 +163,8 @@ def _run_1d(args: argparse.Namespace) -> int:
 
 def _run_2d(args: argparse.Namespace) -> int:
     scenario = args.scenario or "five_spot"
+    if not _require_scenario("2D", scenario, ("five_spot", "thief_zone", "single_well")):
+        return 2
     out_dir = args.out_dir or "output"
     os.makedirs(out_dir, exist_ok=True)
     dt_days = args.dt_days or 0.5
@@ -183,6 +201,10 @@ def _run_2d(args: argparse.Namespace) -> int:
 
 def _run_3d(args: argparse.Namespace) -> int:
     scenario = args.scenario or "layered_reservoir"
+    if not _require_scenario(
+        "3D", scenario, ("gravity_override", "single_well_3d", "layered_reservoir")
+    ):
+        return 2
     out_dir = args.out_dir or "output"
     os.makedirs(out_dir, exist_ok=True)
     dt_days = args.dt_days or 2.0
@@ -220,8 +242,21 @@ def _run_tests(_args: argparse.Namespace) -> int:
     print("\n=======================================================")
     print(f"  Running H2MultiSim™ Test Suite ({__version__})")
     print("=======================================================\n")
+    root = Path(__file__).resolve().parents[2]
+    tests_dir = root / "tests"
+    if not tests_dir.is_dir():
+        tests_dir = Path.cwd() / "tests"
+    if not (tests_dir / "__init__.py").is_file():
+        print(
+            "Error: the validation test suite is not installed with this package. "
+            "Run `pytest` from a source checkout instead.",
+            file=sys.stderr,
+        )
+        return 2
     loader = unittest.TestLoader()
-    suite = loader.discover("tests", pattern="test_*.py")
+    suite = loader.discover(
+        str(tests_dir), pattern="test_*.py", top_level_dir=str(tests_dir.parent)
+    )
     runner = unittest.TextTestRunner(verbosity=2)
     res = runner.run(suite)
     return 0 if res.wasSuccessful() else 1

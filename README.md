@@ -5,13 +5,13 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 24/24 Passed](https://img.shields.io/badge/tests-24%2F24%20passed-brightgreen.svg)](tests/)
+[![Tests: 31/31 Passed](https://img.shields.io/badge/tests-31%2F31%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
-- **0D Tier**: Lumped material balance with strict BHP clamping and lognormal Monte Carlo uncertainty quantification (UQ).
+- **0D Tier**: Lumped material balance with an exact mass-state step, active BHP/rate control, and lognormal Monte Carlo uncertainty quantification (UQ).
 - **1D Tier**: Radial finite-volume model on logarithmic grids with implicit Thomas algorithm solving near-wellbore transient drawdowns and buildups.
-- **2D Tier**: Areal Cartesian grid with unconditionally stable Gauss-Seidel SOR ($\omega = 1.5$) modeling multi-well interference and permeability channeling.
+- **2D Tier**: Areal Cartesian grid with implicit finite volumes and red-black Gauss-Seidel SOR ($\omega = 1.5$), Picard iteration, and multi-well interference/permeability channeling.
 - **3D Tier**: Field-scale Cartesian grid with red-black Gauss-Seidel SOR, layer stratigraphy, and buoyant gravity segregation ($+\rho_{\text{harm}} g \Delta z$).
 
 ---
@@ -20,9 +20,9 @@ H2MultiSim™ is an open-source, dependency-free Python toolkit designed for res
 
 ### 1. Robust Real-Gas Thermodynamics (`h2multisim.thermo`)
 - **Closed-Form Analytical PR-EOS**: Solves the cubic Peng-Robinson equation of state using the Cardano/Viète trigonometric method. Guarantees the physical vapor root in a single pass without iterative Newton-Raphson failure or divergence.
-- **Dynamic Viscosity**: Chapman-Enskog formulation calibrated against NIST and Hogeweg et al. (2022) benchmarks ($9.4\,\mu\text{Pa}\cdot\text{s}$ at $333\text{ K}, 82\text{ bar}$).
+- **Dynamic Viscosity**: Chapman-Enskog formulation; within ~1% at the $333\text{ K}, 82\text{ bar}$ Hogeweg point and ~3% mean over 1–350 bar (max ~9%).
 - **Coupled Thermal Model**: Real-gas isentropic adiabatic heating/cooling combined with exponential thermal relaxation toward geothermal equilibrium.
-- **Thermodynamic Inversion**: Models the negative Joule-Thomson coefficient ($\mu_{JT} < 0$) across typical reservoir temperatures ($T > 202\text{ K}$).
+- **Joule–Thomson**: Pressure/temperature-dependent coefficient from the PR volume derivative; screening accuracy only (see `AUDIT.md` F-12).
 - **Adsorption & Compressibility**: Dual-Site Langmuir (DSL) isotherms and rigid/elastic/breathing-MOF pore-volume models.
 
 ### 2. Multi-Scale Hierarchy
@@ -40,17 +40,26 @@ H2MultiSim™ is an open-source, dependency-free Python toolkit designed for res
 
 ## Benchmark Validation
 
-H2MultiSim™ is validated against peer-reviewed experimental literature and NIST reference data:
+The thermodynamic core is a screening model.  The values below were measured
+against CoolProp 8.0.0 (Leachman et al. normal-hydrogen reference EOS); they are
+reproducible with `audit/bench_thermo.py`.  Do not use the cubic EOS for custody
+transfer or regulatory reporting.
 
-| Metric | Condition | Reference Benchmark | H2MultiSim™ | Error |
+| Metric | Condition | Reference (CoolProp) | H2MultiSim™ | Error |
 | :--- | :--- | :--- | :--- | :--- |
-| **Z-factor** | $293.15\text{ K}, 1\text{ bar}$ | $1.00060$ (NIST) | $1.00060$ | $< 0.01\%$ |
-| **Z-factor** | $293.15\text{ K}, 100\text{ bar}$ | $1.05881$ (NIST) | $1.05814$ | $< 0.1\%$ |
-| **Z-factor** | $293.15\text{ K}, 250\text{ bar}$ | $1.14283$ (NIST) | $1.14022$ | $< 0.25\%$ |
-| **Gas Density** | $316\text{ K}, 80\text{ bar}$ | $5.98\text{ kg/m}^3$ (Okoroafor 2022) | $5.978\text{ kg/m}^3$ | $< 0.05\%$ |
-| **Viscosity** | $293.15\text{ K}, 1\text{ atm}$ | $8.948\,\mu\text{Pa}\cdot\text{s}$ (NIST NTP) | $8.948\,\mu\text{Pa}\cdot\text{s}$ | $< 0.01\%$ |
-| **Viscosity** | $333\text{ K}, 82\text{ bar}$ | $9.400\,\mu\text{Pa}\cdot\text{s}$ (Hogeweg 2022) | $9.385\,\mu\text{Pa}\cdot\text{s}$ | $< 0.2\%$ |
+| **Z-factor** | $293.15\text{ K}, 1\text{ bar}$ | $1.00059$ | $1.00027$ | $0.03\%$ |
+| **Z-factor** | $293.15\text{ K}, 100\text{ bar}$ | $1.06081$ | $1.03537$ | $2.40\%$ |
+| **Z-factor** | $293.15\text{ K}, 250\text{ bar}$ | $1.15751$ | $1.10938$ | $4.16\%$ |
+| **Gas Density** | $316\text{ K}, 80\text{ bar}$ | $5.868\text{ kg/m}^3$ | $5.978\text{ kg/m}^3$ | $1.86\%$ |
+| **Viscosity** | $293.15\text{ K}, 1\text{ atm}$ | $8.797\,\mu\text{Pa}\cdot\text{s}$ | $8.745\,\mu\text{Pa}\cdot\text{s}$ | $0.59\%$ |
+| **Viscosity** | $333\text{ K}, 82\text{ bar}$ | $9.676\,\mu\text{Pa}\cdot\text{s}$ | $9.547\,\mu\text{Pa}\cdot\text{s}$ | $1.33\%$ |
 | **Thomas Solver**| $N=6$ Poisson system | Analytical solution | Residual $< 10^{-10}$ | Exact |
+
+The Peng–Robinson Z-factor error reaches ~4% at 250 bar.  A Peneloux volume
+translation ($c=-4.0\times10^{-6}\ \mathrm{m^3/mol}$) reduces the maximum Z error
+to below 1% and is the recommended next thermophysical change (see `AUDIT.md`,
+finding F-04).  Mass balance in the 0D/1D/2D/3D solvers is closed to better than
+$10^{-6}$ relative error by the v1.0.1 solver.
 
 ---
 
@@ -139,7 +148,7 @@ H2MultiSim/
 ├── pyproject.toml              # PEP 621 packaging and Ruff configuration
 ├── src/
 │   └── h2multisim/
-│       ├── __init__.py         # Public API and package version (1.0.0)
+│       ├── __init__.py         # Public API and package version (1.0.1)
 │       ├── __main__.py         # Module execution entrypoint
 │       ├── cli.py              # Unified CLI (run, test)
 │       ├── thermo.py           # PR-EOS, NIST viscosity, heat capacity, adsorption
@@ -152,7 +161,7 @@ H2MultiSim/
 │           └── three_d.py      # 3D field-scale model with gravity segregation
 ├── tests/
 │   ├── __init__.py
-│   └── test_validation.py     # 24 benchmark tests matching NIST & literature
+│   └── test_validation.py     # 31 benchmark tests matching NIST & literature
 └── README.md                   # Documentation and citation guide
 ```
 

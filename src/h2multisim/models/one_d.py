@@ -82,6 +82,7 @@ class RadialResult:
     cum_wdr_kg: list[float] = field(default_factory=list)
     P_avg_Pa: list[float] = field(default_factory=list)
     T_avg_K: list[float] = field(default_factory=list)
+    mass_kg: list[float] = field(default_factory=list)
     snapshots: list[RadialSnapshot] = field(default_factory=list)
     metrics: dict[str, float] = field(default_factory=dict)
 
@@ -139,11 +140,15 @@ class UHSRadial1D:
         props: RadialReservoirProps,
         N: int = 40,
         eos: PengRobinsonH2 | None = None,
+        max_picard: int = 20,
+        picard_tol_Pa: float = 0.1,
     ) -> None:
         self.props = props
         self.N = N
         self.eos = eos or PengRobinsonH2()
         self.tau_s = props.tau_days * 86400.0
+        self.max_picard = max_picard
+        self.picard_tol_Pa = picard_tol_Pa
 
         self.r_c, self.r_i = build_log_grid(props.r_well, props.r_ext, N)
         self.V_cell = [
@@ -152,7 +157,9 @@ class UHSRadial1D:
         self.Vp = [V * props.phi for V in self.V_cell]
 
     def _trans(self, P: list[float], T: list[float], i: int) -> float:
-        if i < 0 or i >= self.N - 1:
+        # i = N-1 is the link to the ghost cell used by the const-pressure
+        # outer boundary; P and T must then contain N+1 entries.
+        if i < 0 or i > self.N - 1:
             return 0.0
         rho_L = self.eos.density(P[i], T[i])
         rho_R = self.eos.density(P[i + 1], T[i + 1])
@@ -162,14 +169,16 @@ class UHSRadial1D:
             return 0.0
         rho_h = 2.0 * rho_L * rho_R / (rho_L + rho_R)
         mu_h = 2.0 * mu_L * mu_R / (mu_L + mu_R)
-        ln_r = math.log(self.r_i[i + 2] / self.r_i[i + 1])
+        j = min(i + 1, self.N - 1)
+        ln_r = math.log(self.r_i[j + 1] / self.r_i[j])
         if ln_r < 1e-12:
             return 0.0
         return 2.0 * math.pi * self.props.k * self.props.h * rho_h / (mu_h * ln_r)
 
     def _well_index(self, T_w: float, P_w: float) -> float:
-        delta_r0 = self.r_i[1] - self.r_i[0]
-        r_eq = 0.2 * delta_r0
+        # Peaceman radial equivalent radius: the innermost cell centre is the
+        # well block radius, which removes the arbitrary 0.2·Δr approximation.
+        r_eq = self.r_c[0]
         rho_w = self.eos.density(P_w, T_w)
         mu_w = viscosity_h2(T_w, P_w)
         ln_r = math.log(max(r_eq, self.props.r_well * 1.001) / self.props.r_well)
@@ -177,6 +186,7 @@ class UHSRadial1D:
         return 2.0 * math.pi * self.props.k * self.props.h * rho_w / (mu_w * ln_r)
 
     def _well_rate(self, P: list[float], T: list[float], ctrl: WellControl) -> tuple[float, float]:
+        """Well rate and flowing BHP for the current state (diagnostic helper)."""
         if ctrl.mode == "shut_in":
             return 0.0, P[0]
 
@@ -196,72 +206,150 @@ class UHSRadial1D:
 
         return 0.0, P[0]
 
+    def _solve_mass_step(
+        self,
+        P_old: list[float],
+        T_old: list[float],
+        ctrl: WellControl,
+        dt: float,
+        fixed_q: float | None,
+    ) -> tuple[list[float], list[float], float]:
+        """
+        Solve one implicit step with a mass-conservative accumulation term.
+
+        The accumulation is linearised around the current pressure iterate:
+            Vp·(ρ(P) - ρ_old)/dt ≈ A·(P - P_iter) + Vp·(ρ_iter - ρ_old)/dt
+        with A = Vp·(dρ/dP).  Picard iterations remove the linearisation error,
+        so the discrete mass balance closes to the pressure tolerance.  The
+        temperature update is part of the iterate because density depends on T;
+        this keeps the well source and the stored mass consistent.
+
+        ``fixed_q`` is a signed mass rate [kg/s] for rate-controlled periods;
+        ``None`` means the well is controlled by its BHP target.
+        """
+        N = self.N
+        T_half = [self._trans(P_old, T_old, i) if i < N - 1 else 0.0 for i in range(N)]
+        rho_old = [self.eos.density(P_old[i], T_old[i]) for i in range(N)]
+        Pk = list(P_old)
+        Tk = list(T_old)
+        T_geo = self.props.T_init
+
+        for _picard in range(self.max_picard):
+            Tk = [
+                coupled_temperature_update(
+                    T_old=T_old[i],
+                    P_old=max(P_old[i], 1.0),
+                    P_new=max(Pk[i], 1.0),
+                    T_geothermal=T_geo,
+                    dt_s=dt,
+                    tau_s=self.tau_s,
+                    eos=self.eos,
+                )
+                for i in range(N)
+            ]
+            rho_k = [self.eos.density(Pk[i], Tk[i]) for i in range(N)]
+            drho = [self.eos.drho_dP(Pk[i], Tk[i]) for i in range(N)]
+
+            a = [0.0] * N
+            b = [0.0] * N
+            c = [0.0] * N
+            d = [0.0] * N
+
+            WI = 0.0
+            if ctrl.mode != "shut_in" and fixed_q is None:
+                WI = self._well_index(Tk[0], Pk[0])
+
+            for i in range(N):
+                T_left = T_half[i - 1] if i > 0 else 0.0
+                T_right = T_half[i] if i < N - 1 else 0.0
+                T_right_outer = 0.0
+                if i == N - 1 and self.props.outer_bc == "const_pressure":
+                    T_right_outer = self._trans(
+                        Pk + [self.props.P_init], Tk + [self.props.T_init], N - 1
+                    )
+
+                A = self.Vp[i] * drho[i] / dt
+                # Exact accumulation linearised around Pk.
+                accum = self.Vp[i] * (rho_k[i] - rho_old[i]) / dt
+
+                a[i] = -T_left
+                c[i] = -T_right
+                b[i] = A + T_left + T_right + T_right_outer
+                d[i] = A * Pk[i] - accum
+
+                if i == N - 1 and T_right_outer > 0.0:
+                    d[N - 1] += T_right_outer * self.props.P_init
+
+            if ctrl.mode != "shut_in":
+                if fixed_q is None:
+                    b[0] += WI
+                    d[0] += WI * ctrl.bhp_target
+                else:
+                    d[0] += fixed_q
+
+            P_new = thomas_solve(a, b, c, d)
+            P_new = [max(p, 1.0e3) for p in P_new]
+            change = max(abs(P_new[i] - Pk[i]) for i in range(N))
+            Pk = P_new
+            if change < self.picard_tol_Pa:
+                break
+
+        if ctrl.mode == "shut_in":
+            q = 0.0
+        elif fixed_q is not None:
+            q = fixed_q
+        else:
+            WI = self._well_index(Tk[0], Pk[0])
+            q = WI * (ctrl.bhp_target - Pk[0])
+
+        return Pk, Tk, q
+
     def _solve_pressure(
         self,
         P: list[float],
         T: list[float],
         ctrl: WellControl,
         dt: float,
-    ) -> tuple[list[float], float, float]:
-        N = self.N
-        phi = self.props.phi
-        Ct = self.props.Ct
+    ) -> tuple[list[float], list[float], float, float]:
+        """
+        Solve one pressure/temperature step with an active-set well model.
 
-        T_half = [self._trans(P, T, i) for i in range(N)]
-        _, BHP = self._well_rate(P, T, ctrl)
+        The well is first solved against its BHP target.  If the resulting rate
+        exceeds ``q_max`` the well is switched to rate control and the pressure
+        is re-solved with a fixed mass source.  The well-cell pressure is never
+        overwritten, so the reported rate, BHP and reservoir mass are mutually
+        consistent.
+        """
+        if ctrl.mode == "shut_in":
+            P_new, T_new, _ = self._solve_mass_step(P, T, ctrl, dt, fixed_q=0.0)
+            return P_new, T_new, 0.0, P_new[0]
 
-        B = []
-        for i in range(N):
-            rho_i = self.eos.density(P[i], T[i])
-            B.append(phi * Ct * self.Vp[i] * rho_i / dt)
+        WI0 = self._well_index(T[0], P[0])
+        q_try = WI0 * (ctrl.bhp_target - P[0])
+        # A well cannot flow backwards through its intended direction; shut it
+        # in if the reservoir has already crossed the BHP target.
+        if (ctrl.mode == "inject" and q_try < 0.0) or (ctrl.mode == "withdraw" and q_try > 0.0):
+            P_new, T_new, _ = self._solve_mass_step(P, T, ctrl, dt, fixed_q=0.0)
+            return P_new, T_new, 0.0, P_new[0]
 
-        a = [0.0] * N
-        b = [0.0] * N
-        c = [0.0] * N
-        d = [0.0] * N
+        fixed_q: float | None = None
+        if ctrl.q_max > 0.0 and abs(q_try) > ctrl.q_max:
+            fixed_q = math.copysign(ctrl.q_max, q_try)
 
-        for i in range(N):
-            T_left = T_half[i - 1] if i > 0 else 0.0
-            T_right = T_half[i] if i < N - 1 else 0.0
+        P_new, T_new, q = self._solve_mass_step(P, T, ctrl, dt, fixed_q)
 
-            if i == N - 1 and self.props.outer_bc == "const_pressure":
-                T_right_outer = self._trans(P + [self.props.P_init], T + [self.props.T_init], N - 1)
-            else:
-                T_right_outer = 0.0
+        if fixed_q is not None:
+            # If the BHP constraint is already satisfied at the capped rate,
+            # the rate cap is not binding and the BHP-controlled solution holds.
+            binding = (ctrl.mode == "inject" and P_new[0] <= ctrl.bhp_target) or (
+                ctrl.mode == "withdraw" and P_new[0] >= ctrl.bhp_target
+            )
+            if not binding:
+                P_new, T_new, q = self._solve_mass_step(P, T, ctrl, dt, None)
 
-            a[i] = -T_left
-            c[i] = -T_right
-            b[i] = B[i] + T_left + T_right + T_right_outer
-            d[i] = B[i] * P[i]
-
-            if i == 0 and ctrl.mode != "shut_in":
-                WI = self._well_index(T[0], P[0])
-                b[0] += WI
-                d[0] += WI * ctrl.bhp_target
-
-            if i == N - 1 and T_right_outer > 0.0:
-                d[N - 1] += T_right_outer * self.props.P_init
-
-        P_new = thomas_solve(a, b, c, d)
-        P_new = [max(p, 1.0e3) for p in P_new]
-
-        if ctrl.mode == "inject":
-            P_new[0] = min(P_new[0], ctrl.bhp_target)
-        elif ctrl.mode == "withdraw":
-            P_new[0] = max(P_new[0], ctrl.bhp_target)
-
-        WI_final = self._well_index(T[0], P_new[0])
-        if ctrl.mode == "inject":
-            q_final = min(WI_final * max(ctrl.bhp_target - P_new[0], 0.0), ctrl.q_max)
-            q_final = max(q_final, 0.0)
-        elif ctrl.mode == "withdraw":
-            q_final = -min(WI_final * max(P_new[0] - ctrl.bhp_target, 0.0), ctrl.q_max)
-            q_final = min(q_final, 0.0)
-        else:
-            q_final = 0.0
-
-        BHP_final = P_new[0]
-        return P_new, q_final, BHP_final
+        WI = self._well_index(T_new[0], P_new[0])
+        bhp = P_new[0] + q / max(WI, 1e-30)
+        return P_new, T_new, q, bhp
 
     def _update_temperature(
         self,
@@ -290,7 +378,6 @@ class UHSRadial1D:
         dt_days: float = 0.1,
         snap_days: list[float] | None = None,
     ) -> RadialResult:
-        dt = dt_days * 86400.0
         P = [self.props.P_init] * self.N
         T = [self.props.T_init] * self.N
         result = RadialResult()
@@ -300,21 +387,28 @@ class UHSRadial1D:
         t = 0.0
         snap_targets = sorted(snap_days or [])
         snap_idx = 0
+        m_initial = sum(self.eos.density(P[i], T[i]) * self.Vp[i] for i in range(self.N))
+        m_max = m_initial
+        m_min = m_initial
 
         for ctrl in schedule:
             n_steps = max(int(ctrl.duration_d / dt_days), 1)
+            dt_act = ctrl.duration_d * 86400.0 / n_steps
             for _ in range(n_steps):
-                P_new, q_well, BHP = self._solve_pressure(P, T, ctrl, dt)
-                T_new = self._update_temperature(P, P_new, T, dt)
-                t += dt
+                P_new, T_new, q_well, BHP = self._solve_pressure(P, T, ctrl, dt_act)
+                t += dt_act
 
                 if q_well >= 0.0:
-                    cum_inj += q_well * dt
+                    cum_inj += q_well * dt_act
                 else:
-                    cum_wdr += (-q_well) * dt
+                    cum_wdr += (-q_well) * dt_act
 
                 P = P_new
                 T = T_new
+
+                m_now = sum(self.eos.density(P[i], T[i]) * self.Vp[i] for i in range(self.N))
+                m_max = max(m_max, m_now)
+                m_min = min(m_min, m_now)
 
                 result.times_s.append(t)
                 result.BHP_Pa.append(BHP)
@@ -323,6 +417,7 @@ class UHSRadial1D:
                 result.cum_wdr_kg.append(cum_wdr)
                 result.P_avg_Pa.append(sum(P) / len(P))
                 result.T_avg_K.append(sum(T) / len(T))
+                result.mass_kg.append(m_now)
 
                 t_days = t / 86400.0
                 while snap_idx < len(snap_targets) and t_days >= snap_targets[snap_idx]:
@@ -337,12 +432,19 @@ class UHSRadial1D:
                     snap_idx += 1
 
         total_Vp = sum(self.Vp)
-        m_final = sum(self.eos.density(P[i], T[i]) * self.Vp[i] for i in range(self.N))
+        m_final = result.mass_kg[-1] if result.mass_kg else m_initial
+        net = cum_inj - cum_wdr
+        mb_err = abs((m_final - m_initial) - net) / max(abs(net), 1.0)
         result.metrics = {
             "total_injected_kg": cum_inj,
             "total_withdrawn_kg": cum_wdr,
-            "net_stored_kg": cum_inj - cum_wdr,
+            "net_stored_kg": net,
+            "cycled_gas_kg": cum_inj + cum_wdr,
+            "initial_mass_kg": m_initial,
             "final_mass_kg": m_final,
+            "mass_balance_error": mb_err,
+            "working_gas_kg": m_max - m_min,
+            "cushion_gas_kg": m_min,
             "pore_volume_m3": total_Vp,
             "final_BHP_Pa": result.BHP_Pa[-1] if result.BHP_Pa else P[0],
             "final_avg_P_Pa": result.P_avg_Pa[-1] if result.P_avg_Pa else P[0],
@@ -408,7 +510,6 @@ def export_radial_timeseries_csv(result: RadialResult, filepath: str) -> None:
             result.cum_wdr_kg,
             result.P_avg_Pa,
             result.T_avg_K,
-            strict=False,
         ):
             w.writerow(
                 [
