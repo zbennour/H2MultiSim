@@ -1,0 +1,21 @@
+{
+  "scale": "2d",
+  "reservoir": {
+    "Lx": 1000.0, "Ly": 1000.0, "h": 10.0,
+    "phi": 0.20, "permeability_mD": 10.0, "Ct": 5.0e-10,
+    "P_init": "80 bar", "T_init": 316.0,
+    "nx": 8, "ny": 8, "tau_days": 30.0
+  },
+  "wells": [
+    {"i": 0, "j": 0, "name": "INJ"},
+    {"i": 7, "j": 7, "name": "PROD"}
+  ],
+  "schedule": [
+    {"name": "inject", "mode": "inject", "duration_days": 5.0, "bhp_target": "108 bar", "q_max": 10.0,
+     "well_modes": {"INJ": "inject", "PROD": "shut_in"}},
+    {"name": "withdraw", "mode": "withdraw", "duration_days": 5.0, "bhp_target": "55 bar", "q_max": 10.0,
+     "well_modes": {"INJ": "shut_in", "PROD": "withdraw"}}
+  ],
+  "dt_days": 1.0,
+  "out_dir": "output"
+}

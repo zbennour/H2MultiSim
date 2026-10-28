@@ -63,7 +63,20 @@ $10^{-6}$ relative error by the v1.0.1 solver.
 
 ---
 
-## Installation
+## Configuration-driven runs
+
+Instead of the built-in scenarios, a full run can be described by a JSON (or YAML,
+if PyYAML is installed) file:
+
+```bash
+h2multisim run --config examples/04_config_driven_2d.json
+```
+
+The file specifies `scale`, `reservoir`, `wells`, `schedule`, `dt_days` and `out_dir`;
+every field maps onto the model dataclasses (see `src/h2multisim/config.py`). Pressures
+accept either pascals or strings such as `"80 bar"`; permeability can be given in mD
+via `permeability_mD`. This removes the need to edit Python source to study a new
+reservoir.
 
 H2MultiSim™ uses only the Python standard library for simulation and has zero external runtime dependencies.
 
