@@ -171,8 +171,8 @@ If you use H2MultiSim™ in academic research or industrial feasibility studies,
 
 ## Authors & Acknowledgments
 
-- **Ziad Bennour** ([@zbennour](https://github.com/zbennour)) — Architecture, multi-scale numerical engines (0D/1D/2D/3D), validation test suite, and package maintenance.
-- **kwkushan** — Original author of the foundational V1.3 analytical Peng-Robinson EOS formulation, single-cell lumped model prototype, and benchmark scenario definitions.
+- **Ziad Bennour** ([@zbennour](https://github.com/zbennour)); Architecture, multi-scale numerical engines (0D/1D/2D/3D), validation test suite, and package maintenance.
+- **Kushan Sandunil** ([@kwkushan](https://github.com/kwkushan)); Original author of the foundational V1.3 analytical Peng-Robinson EOS formulation, single-cell lumped model prototype, and benchmark scenario definitions.
 
 ---
 
