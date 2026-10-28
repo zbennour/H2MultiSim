@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environments
+.venv/
+env/
+venv/
+
+# Caches and tooling
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Simulator outputs and CSV artifacts
+*.csv
+output/
+h2store_output/
+sim_output/
