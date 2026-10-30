@@ -1,19 +1,28 @@
 # Changelog
 
-## v1.1.0 — Unreleased
+## v1.1.0 — 2026-10-30
 
 ### Thermodynamics & Accuracy
 - Integrated Peneloux volume translation across all model tiers (0D, 1D, 2D, 3D) and config loaders (`peneloux=True` or `volume_translation=-4.0e-6`), reducing peak PR-EOS Z-factor error from 4.16% to <0.85% across 1–350 bar.
+- Fixed Peneloux volume-translation double-counting in `PengRobinsonH2.fugacity_coefficient` and evaluated cubic pressure derivatives at the untranslated molar volume $V_{\text{PR}} = V_m + c$ in `gamma_real_h2` and `cp_real_h2`.
 - Added Muzny et al. (2013) / NIST density-dependent dense-fluid residual correction to `viscosity_h2`, reducing high-pressure viscosity error from 9.2% down to <1.5% across 250–450 K and 1–350 bar.
 - Added `cp_real_h2` and `cp_specific_real_h2` evaluating real-gas isobaric heat capacity via Peng-Robinson enthalpy departure.
-- Resolved analytical Joule-Thomson coefficient formulation via $T(\partial V/\partial T)_P - V = (R T^2/P)(\partial Z/\partial T) + c$, eliminating numerical cancellation and restoring exact physical negative sign and magnitude.
-- Expanded validation test suite to 34 test cases (with 29 subtests).
+- Resolved analytical Joule-Thomson coefficient formulation via $T(\partial V/\partial T)_P - V = (R T^2/P)(\partial Z/\partial T) + c$ (using Peneloux covolume translation when `eos.volume_translation == 0.0`), restoring negative $\mu_{\text{JT}}$ across the entire 1–350 bar operating envelope.
 
-### Scenarios & Domain Enhancements
-- Added `schedule_rough` in 0D representing Rough depleted gas field operating schedule (270d cushion gas fill, 3 annual cycles).
-- Added `rough_radial` in 1D modeling Rough-scale radial well operations at 150 bar, 369 K.
+### Solvers, Hydrostatics & Well Controls
+- Rebuilt 3D `_hydrostatic_init` around the exact mid-depth datum ($z_{\text{ref}} = 0.5 L_z$) using fixed-point iteration on discrete harmonic density $\rho_h(P_k, P_{k+1})$ so $\text{mean}(P) = P_{\text{init}}$ and initial shut-in vertical flux is zero to machine precision.
+- Added post-solve `q_max` rate-cap enforcement across 1D, 2D, and 3D active-set solvers and passed precomputed cell densities directly to `viscosity_h2`.
+- Added upfront validation of unique well names, grid bounds, perforation intervals, and `k_field` dimensions in `UHSAreal2D` and `UHSFieldScale3D`.
+- Added per-well operating mode overrides (`well_modes` and `mode_for`) to `Schedule3D`.
+- Replaced hardcoded $9.0\,\mu\text{Pa}\cdot\text{s}$ viscosity in `UHSReservoir0D._productivity_index` with `viscosity_h2(T, P, rho=rho, eos=self.eos)`.
+- Exposed `max_picard_residual_Pa` and `converged` metrics across 1D, 2D, and 3D results, and fixed float-accumulation snapshot boundary checks.
+
+### Scenarios, Config, CLI & Testing
+- Added `schedule_rough` in 0D representing Rough depleted gas field operating schedule (270d cushion gas fill, 3 annual cycles) and `rough_radial` in 1D (150 bar, 369 K).
 - Added `compute_sweep_efficiency` in 2D supporting volumetric sweep fraction evaluation on both 2D grids and flat cell arrays.
-- Exposed `--scenario rough` across `0d` and `1d` simulation scales via CLI.
+- Updated `run_monte_carlo` and `cli.py` so `--scenario rough --mc` and `--config ... --mc` execute the active schedule and preserve `peneloux`, `pore_model`, `isotherm`, and `m_sorbent`.
+- Extended `config.py` to support 0D `pore_model`/`isotherm`, 2D `k_field`/`k_field_mD`, 3D `k_layers`/`k_layers_mD`, and 3D `well_modes`.
+- Added `NUMERICAL_TOLERANCES.md`, `CONTRIBUTING.md`, `CITATION.cff`, `tests/test_char_2d.py` characterization test, and expanded the test suite to 38 tests (with 29 subtests) and `pytest-cov` CI reporting.
 
 ## v1.0.1 — 2026-10-28
 

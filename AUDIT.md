@@ -87,6 +87,34 @@ four significant figures and closes mass to 1.3 × 10⁻⁷.  The 2D five-spot s
 
 ---
 
+## 0.2 v1.1.0 release — status
+
+The P1 thermophysical, hydrostatic, solver-validation, and configuration items above are now
+resolved on `main` (`v1.1.0`, 38 tests + 29 subtests):
+
+- **Peneloux Volume Translation (F-04, F-11):** Opt-in `peneloux=True` / `volume_translation = -4.0e-6`
+  across all four model tiers and `config.py` reduces $Z$-factor error to $<0.85\%$ across
+  1–350 bar without distorting cubic departure derivatives (`cp_real_h2`, `gamma_real_h2`,
+  `fugacity_coefficient`).
+- **Muzny Dense-Fluid Viscosity (F-12, F-21):** `viscosity_h2` now includes the Muzny et al.
+  (2013) density residual ($\mu_0(T) + c_1\rho + c_2\rho^2$), matching CoolProp 8.0.0 within
+  $<1.5\%$ across 250–450 K and 1–350 bar (mean $1.11\%$), and is used in 0D `_productivity_index`
+  as well as 1D/2D/3D transmissibilities and well indices.
+- **Analytical Joule-Thomson & Real-Gas $C_p$ (F-13, F-23):** Added `cp_real_h2` and
+  `cp_specific_real_h2` ($1.81\%$ mean error vs CoolProp) and analytical $\mu_{\text{JT}}$ with
+  Peneloux covolume translation ($0.74\%$ mean error vs CoolProp, negative across 1–350 bar).
+- **3D Discrete Hydrostatic Initialisation (F-05, F-13b):** `UHSFieldScale3D._hydrostatic_init`
+  initialises the vertical column around mid-depth $z_{\text{ref}} = 0.5 L_z$ using fixed-point
+  iteration on discrete harmonic density $\rho_h$, so $\text{mean}(P) = P_{\text{init}}$ and
+  shut-in vertical flux is zero to machine precision.
+- **Solver & Config Hardening (F-16, F-17, F-24, F-25, F-26):** Added `max_picard_residual_Pa`
+  and `converged` metrics to 1D/2D/3D results, post-solve `q_max` rate-cap checks, unique well
+  name and grid-bounds validation, full 0D Monte Carlo schedule/property propagation, JSON/YAML
+  config support across all scales, `CITATION.cff`, `CONTRIBUTING.md`, `NUMERICAL_TOLERANCES.md`,
+  and `pytest-cov` in CI.
+
+---
+
 ## 1. Method
 
 1. **Static review** of every source file, test, CI workflow and metadata.
