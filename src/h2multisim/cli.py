@@ -16,6 +16,11 @@ from pathlib import Path
 
 from h2multisim import __version__
 from h2multisim.config import build_from_config
+from h2multisim.deck_export import (
+    export_eclipse_1d_radial,
+    export_eclipse_2d,
+    export_eclipse_3d,
+)
 from h2multisim.models.one_d import (
     UHSRadial1D,
     export_radial_timeseries_csv,
@@ -270,6 +275,102 @@ def _run_3d(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_export_deck(args: argparse.Namespace) -> int:
+    out_dir = args.out_dir or "output"
+    os.makedirs(out_dir, exist_ok=True)
+
+    if getattr(args, "config", None):
+        try:
+            from h2multisim.config import load_config
+
+            cfg = load_config(args.config)
+            scale, props, wells, sched, _dt_days, cfg_out_dir = build_from_config(cfg)
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        scenario = Path(args.config).stem
+        if cfg_out_dir and not args.out_dir:
+            out_dir = cfg_out_dir
+            os.makedirs(out_dir, exist_ok=True)
+    else:
+        scale = getattr(args, "scale", None)
+        if not scale:
+            print("Error: --scale is required unless --config is given", file=sys.stderr)
+            return 2
+        props = None
+        wells = None
+        sched = None
+        scenario = args.scenario
+
+    if scale == "0d":
+        print(
+            "Error: 0D lumped models do not have spatial grid dimensions for ECLIPSE/OPM Flow export.",
+            file=sys.stderr,
+        )
+        return 2
+
+    out_file = getattr(args, "out_file", None)
+
+    if scale == "1d":
+        if props is None:
+            scenario = scenario or "okoroafor"
+            if not _require_scenario("1D", scenario, ("okoroafor", "rough")):
+                return 2
+            if scenario == "rough":
+                props, sched = rough_radial()
+            else:
+                props, sched = okoroafor_radial()
+        if not out_file:
+            out_file = os.path.join(out_dir, f"1d_{scenario}.DATA")
+        export_eclipse_1d_radial(props, sched, out_file, title=f"H2MultiSim 1D - {scenario}")
+    elif scale == "2d":
+        if props is None:
+            scenario = scenario or "five_spot"
+            if not _require_scenario("2D", scenario, ("five_spot", "thief_zone", "single_well")):
+                return 2
+            nx, ny = 15, 15
+            if scenario == "thief_zone":
+                props, wells, sched = scenario_thief_zone(nx, ny)
+            elif scenario == "single_well":
+                props, wells, sched = scenario_single_well(nx, ny)
+            else:
+                props, wells, sched = scenario_five_spot(nx, ny)
+        if not out_file:
+            out_file = os.path.join(out_dir, f"2d_{scenario}.DATA")
+        export_eclipse_2d(props, wells, sched, out_file, title=f"H2MultiSim 2D - {scenario}")
+    elif scale == "3d":
+        if props is None:
+            scenario = scenario or "layered_reservoir"
+            if not _require_scenario(
+                "3D", scenario, ("gravity_override", "single_well_3d", "layered_reservoir")
+            ):
+                return 2
+            nx, ny, nz = 8, 8, 5
+            if scenario == "gravity_override":
+                props, wells, sched = scenario_gravity_override(nx, ny, nz)
+            elif scenario == "single_well_3d":
+                props, wells, sched = scenario_single_well_3d(nx, ny, nz)
+            else:
+                props, wells, sched = scenario_layered_reservoir(nx, ny, nz)
+        if not out_file:
+            out_file = os.path.join(out_dir, f"3d_{scenario}.DATA")
+        export_eclipse_3d(props, wells, sched, out_file, title=f"H2MultiSim 3D - {scenario}")
+    else:
+        print(f"Error: unsupported deck export scale {scale!r}", file=sys.stderr)
+        return 2
+
+    print("\n=======================================================")
+    print("  H2MultiSim™ ECLIPSE / OPM Flow Deck Exporter")
+    print("=======================================================")
+    print(f"  Simulation Scale  : {scale.upper()}")
+    print(f"  Scenario Name     : {scenario}")
+    print(f"  Target File       : {os.path.abspath(out_file)}")
+    print("  Output Format     : ECLIPSE 100/300 & OPM Flow (.DATA)")
+    print(f"  Status            : Export complete ({os.path.getsize(out_file):,} bytes)")
+    print("=======================================================\n")
+    return 0
+
+
 def _run_tests(_args: argparse.Namespace) -> int:
     print("\n=======================================================")
     print(f"  Running H2MultiSim™ Test Suite ({__version__})")
@@ -335,10 +436,48 @@ def main() -> None:
     # test command
     subparsers.add_parser("test", help="Execute the validation benchmark test suite")
 
+    # export-deck command
+    deck_parser = subparsers.add_parser(
+        "export-deck",
+        help="Export simulation scenario to an industry-standard ECLIPSE / OPM Flow (.DATA) input deck",
+    )
+    deck_parser.add_argument(
+        "--scale",
+        choices=["1d", "2d", "3d"],
+        required=False,
+        help="Dimensional simulation scale (1d, 2d, or 3d; not needed with --config)",
+    )
+    deck_parser.add_argument(
+        "--scenario",
+        type=str,
+        default=None,
+        help="Pre-configured scenario name (1D: okoroafor, rough; 2D: five_spot, thief_zone, single_well; 3D: gravity_override, single_well_3d, layered_reservoir)",
+    )
+    deck_parser.add_argument(
+        "--out-file",
+        type=str,
+        default=None,
+        help="Target output path for the .DATA deck file (default: output/<scale>_<scenario>.DATA)",
+    )
+    deck_parser.add_argument(
+        "--out-dir",
+        type=str,
+        default=None,
+        help="Target output directory (used if --out-file is not specified)",
+    )
+    deck_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to a JSON/YAML run configuration file",
+    )
+
     args = parser.parse_args()
 
     if args.command == "test":
         sys.exit(_run_tests(args))
+    elif args.command == "export-deck":
+        sys.exit(_run_export_deck(args))
     elif args.command == "run":
         if getattr(args, "config", None):
             try:

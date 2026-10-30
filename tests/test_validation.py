@@ -17,8 +17,14 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from h2multisim.cli import _run_0d, _run_1d, _run_2d, _run_3d
+from h2multisim.cli import _run_0d, _run_1d, _run_2d, _run_3d, _run_export_deck
 from h2multisim.config import build_from_config, load_config
+from h2multisim.deck_export import (
+    export_eclipse_1d_radial,
+    export_eclipse_2d,
+    export_eclipse_3d,
+    generate_pvdg_table,
+)
 from h2multisim.models.one_d import (
     RadialReservoirProps,
     UHSRadial1D,
@@ -979,6 +985,246 @@ class TestH2MultiSimValidation(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(tmpdir, "1d_config_timeseries.csv")))
             self.assertTrue(os.path.isfile(os.path.join(tmpdir, "2d_config_timeseries.csv")))
             self.assertTrue(os.path.isfile(os.path.join(tmpdir, "3d_config_timeseries.csv")))
+
+    # ── 38. Analytical Real-Gas Pseudopressure Verification ─────────────────
+    def test_38_analytical_real_gas_pseudopressure(self) -> None:
+        try:
+            import sys
+            from pathlib import Path
+
+            audit_dir = str(Path(__file__).resolve().parents[1] / "audit")
+            if audit_dir not in sys.path:
+                sys.path.insert(0, audit_dir)
+            from bench_analytical_1d import run_analytical_1d_benchmark
+        except ImportError:
+            self.skipTest("audit benchmark module not available")
+
+        max_bhp_err, max_prof_err = run_analytical_1d_benchmark(verbose=False)
+        self.assertLess(max_bhp_err, 0.50, f"Max BHP error {max_bhp_err:.3f}% exceeds 0.50%")
+        self.assertLess(max_prof_err, 0.25, f"Max profile error {max_prof_err:.3f}% exceeds 0.25%")
+
+    # ── 39. Industry Benchmark Deck Export (ECLIPSE / OPM Flow) ───────────
+    def test_39_eclipse_deck_export(self) -> None:
+        rho_std, pvdg = generate_pvdg_table(
+            T_res_K=316.0, p_min_bar=5.0, p_max_bar=150.0, n_points=10
+        )
+        self.assertAlmostEqual(rho_std, 0.0852, delta=0.005)
+        self.assertEqual(len(pvdg), 10)
+        # Check monotonicity of Bg (decreases with increasing P)
+        for i in range(len(pvdg) - 1):
+            p1, bg1, mu1 = pvdg[i]
+            p2, bg2, mu2 = pvdg[i + 1]
+            self.assertGreater(p2, p1)
+            self.assertLess(bg2, bg1)
+            self.assertGreater(mu1, 0.005)
+            self.assertLess(mu1, 0.050)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 1D Radial Deck Export
+            p1d, s1d = okoroafor_radial()
+            path_1d = os.path.join(tmpdir, "test_1d.DATA")
+            export_eclipse_1d_radial(p1d, s1d, path_1d, N=20, title="Test 1D Radial")
+            self.assertTrue(os.path.isfile(path_1d))
+            with open(path_1d, encoding="utf-8") as fh:
+                c1d = fh.read()
+            for kw in (
+                "RUNSPEC",
+                "RADIAL",
+                "GAS",
+                "METRIC",
+                "GRID",
+                "INRAD",
+                "DRV",
+                "DZV",
+                "PORO",
+                "PERMR",
+                "PROPS",
+                "PVDG",
+                "SOLUTION",
+                "PRESSURE",
+                "SCHEDULE",
+                "WELSPECS",
+                "COMPDAT",
+                "END",
+            ):
+                self.assertIn(kw, c1d, f"Keyword {kw} missing in 1D deck")
+
+            # 2D Deck Export
+            p2d, w2d, s2d = scenario_five_spot(5, 5)
+            path_2d = os.path.join(tmpdir, "test_2d.DATA")
+            export_eclipse_2d(p2d, w2d, s2d, path_2d, title="Test 2D Five Spot")
+            self.assertTrue(os.path.isfile(path_2d))
+            with open(path_2d, encoding="utf-8") as fh:
+                c2d = fh.read()
+            for kw in (
+                "RUNSPEC",
+                "GAS",
+                "METRIC",
+                "DIMENS",
+                "GRID",
+                "DXV",
+                "DYV",
+                "DZV",
+                "PORO",
+                "PERMX",
+                "PERMY",
+                "PROPS",
+                "PVDG",
+                "SOLUTION",
+                "PRESSURE",
+                "SCHEDULE",
+                "WELSPECS",
+                "COMPDAT",
+                "END",
+            ):
+                self.assertIn(kw, c2d, f"Keyword {kw} missing in 2D deck")
+
+            # 3D Deck Export
+            p3d, w3d, s3d = scenario_layered_reservoir(4, 4, 3)
+            path_3d = os.path.join(tmpdir, "test_3d.DATA")
+            export_eclipse_3d(p3d, w3d, s3d, path_3d, title="Test 3D Layered")
+            self.assertTrue(os.path.isfile(path_3d))
+            with open(path_3d, encoding="utf-8") as fh:
+                c3d = fh.read()
+            for kw in (
+                "RUNSPEC",
+                "GAS",
+                "METRIC",
+                "DIMENS",
+                "GRID",
+                "TOPS",
+                "PROPS",
+                "PVDG",
+                "SOLUTION",
+                "EQUIL",
+                "SCHEDULE",
+                "WELSPECS",
+                "COMPDAT",
+                "END",
+            ):
+                self.assertIn(kw, c3d, f"Keyword {kw} missing in 3D deck")
+
+            # CLI integration: export-deck runner
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                # Test 1D CLI export
+                rc_1d = _run_export_deck(
+                    argparse.Namespace(
+                        scale="1d",
+                        scenario="okoroafor",
+                        out_dir=tmpdir,
+                        out_file=None,
+                        config=None,
+                    )
+                )
+                self.assertEqual(rc_1d, 0)
+                self.assertTrue(os.path.isfile(os.path.join(tmpdir, "1d_okoroafor.DATA")))
+
+                # Test 2D CLI export
+                rc_2d = _run_export_deck(
+                    argparse.Namespace(
+                        scale="2d",
+                        scenario="five_spot",
+                        out_dir=tmpdir,
+                        out_file=None,
+                        config=None,
+                    )
+                )
+                self.assertEqual(rc_2d, 0)
+                self.assertTrue(os.path.isfile(os.path.join(tmpdir, "2d_five_spot.DATA")))
+
+                # Test 3D CLI export
+                rc_3d = _run_export_deck(
+                    argparse.Namespace(
+                        scale="3d",
+                        scenario="layered_reservoir",
+                        out_dir=tmpdir,
+                        out_file=None,
+                        config=None,
+                    )
+                )
+                self.assertEqual(rc_3d, 0)
+                self.assertTrue(os.path.isfile(os.path.join(tmpdir, "3d_layered_reservoir.DATA")))
+
+                # Test config file export
+                cfg_path = os.path.join(tmpdir, "test_config_2d.json")
+                with open(cfg_path, "w", encoding="utf-8") as fh:
+                    json.dump(
+                        {
+                            "scale": "2d",
+                            "reservoir": {
+                                "Lx": 100.0,
+                                "Ly": 100.0,
+                                "h": 10.0,
+                                "phi": 0.2,
+                                "k": 1e-13,
+                                "Ct": 5e-10,
+                                "P_init": "80 bar",
+                                "T_init": 316.0,
+                                "nx": 4,
+                                "ny": 4,
+                            },
+                            "wells": [{"i": 0, "j": 0, "name": "W1"}],
+                            "schedule": [
+                                {
+                                    "name": "inj",
+                                    "mode": "inject",
+                                    "duration_days": 2.0,
+                                    "bhp_target": "90 bar",
+                                    "q_max": 10.0,
+                                }
+                            ],
+                            "out_dir": tmpdir,
+                        },
+                        fh,
+                    )
+                rc_cfg = _run_export_deck(
+                    argparse.Namespace(
+                        scale=None,
+                        scenario=None,
+                        out_dir=tmpdir,
+                        out_file=None,
+                        config=cfg_path,
+                    )
+                )
+                self.assertEqual(rc_cfg, 0)
+                self.assertTrue(os.path.isfile(os.path.join(tmpdir, "2d_test_config_2d.DATA")))
+
+                # Test error cases
+                # Scale 0D not supported for spatial deck export
+                self.assertEqual(
+                    _run_export_deck(
+                        argparse.Namespace(
+                            scale="0d",
+                            scenario="teesside",
+                            out_dir=tmpdir,
+                            out_file=None,
+                            config=None,
+                        )
+                    ),
+                    2,
+                )
+                # Invalid scenario
+                self.assertEqual(
+                    _run_export_deck(
+                        argparse.Namespace(
+                            scale="1d",
+                            scenario="invalid_scen",
+                            out_dir=tmpdir,
+                            out_file=None,
+                            config=None,
+                        )
+                    ),
+                    2,
+                )
+                # Missing scale
+                self.assertEqual(
+                    _run_export_deck(
+                        argparse.Namespace(
+                            scale=None, scenario=None, out_dir=tmpdir, out_file=None, config=None
+                        )
+                    ),
+                    2,
+                )
 
 
 if __name__ == "__main__":

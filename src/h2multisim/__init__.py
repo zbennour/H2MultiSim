@@ -10,6 +10,12 @@ Authors:
 License: GPL-3.0-or-later
 """
 
+from h2multisim.deck_export import (
+    export_eclipse_1d_radial,
+    export_eclipse_2d,
+    export_eclipse_3d,
+    generate_pvdg_table,
+)
 from h2multisim.models import (
     H2Reservoir0DModel,
     H2Reservoir1DModel,
@@ -92,6 +98,11 @@ __all__ = [
     "schedule_rough",
     "rough_radial",
     "compute_sweep_efficiency",
+    # Industry Benchmark Deck Exporters (ECLIPSE / OPM Flow)
+    "export_eclipse_1d_radial",
+    "export_eclipse_2d",
+    "export_eclipse_3d",
+    "generate_pvdg_table",
     # Thermodynamics
     "PengRobinsonH2",
     "PoreVolumeModel",

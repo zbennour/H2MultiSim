@@ -5,7 +5,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 38/38 Passed](https://img.shields.io/badge/tests-38%2F38%20passed-brightgreen.svg)](tests/)
+[![Tests: 40/40 Passed](https://img.shields.io/badge/tests-40%2F40%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
@@ -44,6 +44,9 @@ The thermodynamic core is a screening model.  The values below were measured
 against CoolProp 8.0.0 (Leachman et al. normal-hydrogen reference EOS); they are
 reproducible with `audit/bench_thermo.py`.  Do not use the cubic EOS for custody
 transfer or regulatory reporting.
+
+> [!TIP]
+> For the complete quantitative benchmark report across all three tiers (**Tier 1: NIST/CoolProp 8.0.0**, **Tier 2: Al-Hussainy (1966) analytical pseudopressure**, and **Tier 3: OPM Flow & ECLIPSE cross-simulator decks**), see [BENCHMARKS.md](BENCHMARKS.md).
 
 | Metric | Condition | Reference (CoolProp) | H2MultiSim™ | Error |
 | :--- | :--- | :--- | :--- | :--- |
@@ -119,7 +122,13 @@ py -m h2multisim run --scale 2d --scenario thief_zone
 # Run 3D Field-scale gravity segregation simulation
 py -m h2multisim run --scale 3d --scenario gravity_override
 
-# Run complete 38-test verification test suite
+# Export standard ECLIPSE 100/300 & OPM Flow (.DATA) input decks
+py -m h2multisim export-deck --scale 1d --scenario okoroafor
+py -m h2multisim export-deck --scale 2d --scenario five_spot
+py -m h2multisim export-deck --scale 3d --scenario layered_reservoir
+py -m h2multisim export-deck --config simulations/custom_reservoir.json
+
+# Run complete 40-test verification test suite
 py -m h2multisim test
 ```
 
@@ -162,13 +171,19 @@ print(f"Max Pressure: {pa_to_bar(result.metrics['max_pressure_Pa']):.1f} bar")
 
 ```
 H2MultiSim/
-├── pyproject.toml              # PEP 621 packaging and Ruff configuration
+├── pyproject.toml              # PEP 621 packaging, Pytest, and Ruff configuration
+├── BENCHMARKS.md               # 3-Tier Industry Benchmark Report (NIST, Al-Hussainy, OPM Flow)
+├── NUMERICAL_TOLERANCES.md     # Numerical stability, tolerances, and solver convergence limits
+├── audit/
+│   ├── bench_thermo.py         # CoolProp 8.0.0 vs PR-EOS thermodynamic benchmark
+│   └── bench_analytical_1d.py  # Al-Hussainy real-gas pseudopressure radial line-source benchmark
 ├── src/
 │   └── h2multisim/
 │       ├── __init__.py         # Public API and package version (1.1.0)
 │       ├── __main__.py         # Module execution entrypoint
-│       ├── cli.py              # Unified CLI (run, test)
+│       ├── cli.py              # Unified CLI (run, export-deck, test)
 │       ├── config.py           # JSON/YAML run configuration loader
+│       ├── deck_export.py      # ECLIPSE 100/300 & OPM Flow (.DATA) input deck generator
 │       ├── thermo.py           # PR-EOS, Peneloux, NIST/Muzny viscosity, heat capacity, adsorption
 │       ├── units.py            # Dual unit conversions & Cardano cubic solver
 │       └── models/
@@ -180,7 +195,7 @@ H2MultiSim/
 ├── tests/
 │   ├── __init__.py
 │   ├── test_char_2d.py         # 2D single-well golden trajectory characterization test
-│   └── test_validation.py      # 37 benchmark tests matching NIST & literature
+│   └── test_validation.py      # 39 benchmark tests matching NIST, analytical solutions & literature
 └── README.md                   # Documentation and citation guide
 ```
 
@@ -192,8 +207,9 @@ If you use H2MultiSim™ in academic research or industrial feasibility studies,
 
 1. **Okoroafor, E. U., Saltzer, S., & Kovscek, A. R. (2022)**. *Assessing the potential for underground hydrogen storage in depleted gas fields*. International Journal of Hydrogen Energy, 47(78), 33781–33802.
 2. **Hogeweg, S., Strobel, G., & Hagemann, B. (2022)**. *Benchmark study on numerical simulation of underground hydrogen storage in porous media*. Computational Geosciences, 26, 1367–1378.
-3. **Peaceman, D. W. (1978)**. *Interpretation of well-block pressures in numerical reservoir simulation*. Society of Petroleum Engineers Journal, 18(3), 183–194.
-4. **Peng, D.-Y., & Robinson, D. B. (1976)**. *A new two-constant equation of state*. Industrial & Engineering Chemistry Fundamentals, 15(1), 59–64.
+3. **Al-Hussainy, R., Ramey, H. J., & Crawford, P. B. (1966)**. *The Flow of Real Gases Through Porous Media*. Journal of Petroleum Technology, 18(05), 624–636.
+4. **Peaceman, D. W. (1978)**. *Interpretation of well-block pressures in numerical reservoir simulation*. Society of Petroleum Engineers Journal, 18(3), 183–194.
+5. **Peng, D.-Y., & Robinson, D. B. (1976)**. *A new two-constant equation of state*. Industrial & Engineering Chemistry Fundamentals, 15(1), 59–64.
 
 ---
 

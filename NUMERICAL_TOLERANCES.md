@@ -12,6 +12,8 @@ Values below are relative or absolute error bounds vs NIST/CoolProp 8.0.0 (Leach
 | Heat capacity $C_p$ (PR departure) | 350 K, 250 bar | 14,769 J/(kg·K) | $< 4.0\%$ (`test_33`) |
 | Isentropic exponent $\gamma$ (PR departure) | 250–600 K, 50–300 bar | CoolProp 8.0.0 | $< 8.0\%$ (`test_06`) |
 | Joule-Thomson $\mu_{\text{JT}}$ (Peneloux) | 293.15 K, 100 bar | $-3.47\times 10^{-7}\text{ K/Pa}$ | $\pm 1.5\times 10^{-7}\text{ K/Pa}$ (`test_33`) |
+| 1D Radial Well Transient ($m(P)$) | 5 d withdrawal, 80 bar | Al-Hussainy (1966) line source | Flowing BHP $< 0.50\%$, profile $< 0.25\%$ (`test_38`) |
+| Industry Deck Export (ECLIPSE/OPM) | Metric Standard (1.01325 bar, 15 °C) | Pure H2 $\rho_{\text{std}} = 0.08522\text{ kg/sm}^3$ | $\pm 0.005\text{ kg/sm}^3$, monotonic $B_g$ (`test_39`) |
 
 ## Solver & Mass-Balance Tolerances
 
