@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (Industry Benchmarking Framework)
+## v1.2.0 — 2026-10-30
 
 ### Benchmarks & Verification
 - Added **Tier 2 Analytical Pseudopressure Benchmark** (`audit/bench_analytical_1d.py` and `test_38`):

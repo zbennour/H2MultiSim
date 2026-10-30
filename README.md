@@ -179,7 +179,7 @@ H2MultiSim/
 │   └── bench_analytical_1d.py  # Al-Hussainy real-gas pseudopressure radial line-source benchmark
 ├── src/
 │   └── h2multisim/
-│       ├── __init__.py         # Public API and package version (1.1.0)
+│       ├── __init__.py         # Public API and package version (1.2.0)
 │       ├── __main__.py         # Module execution entrypoint
 │       ├── cli.py              # Unified CLI (run, export-deck, test)
 │       ├── config.py           # JSON/YAML run configuration loader
