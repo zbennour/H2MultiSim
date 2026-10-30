@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased (Industry Benchmarking Framework)
+
+### Benchmarks & Verification
+- Added **Tier 2 Analytical Pseudopressure Benchmark** (`audit/bench_analytical_1d.py` and `test_38`):
+  - Solves the Al-Hussainy, Ramey & Crawford (1966) infinite-acting radial line source PDE via machine-precision pure-Python exponential integral $E_1(x)$ (series expansion for $x < 1$, continued fraction for $x \ge 1$) and adaptive Simpson quadrature real-gas pseudopressure $m(p) = 2 \int_0^p [p/(\mu Z)] dp$.
+  - Verified `UHSRadial1D` against analytical solution: max flowing BHP error $0.216\%$ at $0.5\text{ d}$, improving to $0.010\%$ at $5.0\text{ d}$; max spatial profile error $0.108\%$ across 4 orders of magnitude in radius; mass conservation error $9.93 \times 10^{-13}$.
+- Added comprehensive **3-Tier Industry Benchmark Report** (`BENCHMARKS.md`) documenting quantitative comparison against NIST / CoolProp 8.0.0 (HEOS / Leachman 2009 reference EOS), Al-Hussainy analytical solutions, and OPM Flow.
+
+### Industry Simulator Bridge (ECLIPSE & OPM Flow)
+- Added `h2multisim.deck_export` module exporting standard ECLIPSE 100/300 and OPM Flow `.DATA` input decks:
+  - `generate_pvdg_table`: generates gas PVT table (`PVDG`: $P$, $B_g$, $\mu$) using pure-Python Peneloux PR-EOS and Muzny dense-fluid viscosity.
+  - `export_eclipse_1d_radial`: generates native `RADIAL` logarithmic grid decks (`INRAD`, `DRV`, `DTHETAV`, `DZV`, `PORO`, `PERMR`, `PERMTHT`, `PERMZ`, `PVDG`, `PRESSURE`, `WELSPECS`, `COMPDAT`, `WCONINJE`, `WCONPROD`).
+  - `export_eclipse_2d`: generates Cartesian areal decks (`DXV`, `DYV`, `DZV`, `PORO`, `PERMX`, `PERMY`, `PERMZ`, `PVDG`, `PRESSURE`, multi-well controls).
+  - `export_eclipse_3d`: generates 3D stratigraphic field-scale decks with `EQUIL` hydrostatic datum matching mid-depth $z_{\text{ref}} = 0.5 L_z$ and layer perforations.
+- Added `export-deck` CLI subcommand (`h2multisim export-deck --scale ... --scenario ... --out-file ...`).
+- Added `test_39_eclipse_deck_export` in `tests/test_validation.py` bringing the test suite to 40 passing tests.
+- Configured `[tool.pytest.ini_options]` with `pythonpath = ["src"]` in `pyproject.toml`.
+
 ## v1.1.0 — 2026-10-30
 
 ### Thermodynamics & Accuracy
