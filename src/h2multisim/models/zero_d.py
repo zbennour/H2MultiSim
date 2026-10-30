@@ -19,6 +19,7 @@ from h2multisim.thermo import (
     PengRobinsonH2,
     PoreVolumeModel,
     coupled_temperature_update,
+    viscosity_h2,
 )
 from h2multisim.units import (
     K_to_C,
@@ -113,7 +114,7 @@ SimulationResult0D = SimulationResult
 class UHSReservoir0D:
     """
     Zero-dimensional lumped-parameter UHS reservoir model.
-    Enforces strict BHP clamping to eliminate linearisation divergence.
+    Solves the coupled nonlinear mass-balance root at each time step.
     """
 
     def __init__(
@@ -166,19 +167,21 @@ class UHSReservoir0D:
 
         return m_free + m_ads
 
-    def _dm_dP(self, P: float, T: float, dP: float = 1.0e4) -> float:
-        P1 = max(P - dP, 1e3)
-        P2 = P + dP
-        return (self.mass_from_state(P2, T) - self.mass_from_state(P1, T)) / (P2 - P1)
-
-    def _productivity_index(self) -> float:
+    def _productivity_index(
+        self,
+        P: float | None = None,
+        T: float | None = None,
+        rho: float | None = None,
+    ) -> float:
         if self.props.is_cavern:
             return 1.0e6
         k = self.props.permeability
         h = self.props.thickness
         re = max(self.props.drainage_radius, self.props.well_radius * 2.0)
         rw = self.props.well_radius
-        mu = 9.0e-6  # Pa·s
+        P_val = P if P is not None else self.props.reference_pressure
+        T_val = T if T is not None else self.props.reference_temperature
+        mu = viscosity_h2(T_val, P_val, rho=rho, eos=self.eos)
         ln_re_rw = math.log(re / rw)
         PI_single = 2.0 * math.pi * k * h / (mu * max(ln_re_rw, 1e-3))
         return PI_single * self.props.n_wells
@@ -188,8 +191,8 @@ class UHSReservoir0D:
         if period.mode == "shut_in":
             return 0.0
 
-        PI = self._productivity_index()
         rho = self.eos.density(P, T)
+        PI = self._productivity_index(P, T, rho)
         bhp = period.bhp_target
         qmax = period.max_mass_rate
 
@@ -292,6 +295,7 @@ class UHSReservoir0D:
                 P_try = 0.5 * (lo + hi)
             P_new = max(P_try, 1.0e3)
 
+        _, q, T_new = self._step_residual(P_new, P_old, T_old, m_old, period, dt)
         m_new = self.mass_from_state(P_new, T_new)
         q_report = (m_new - m_old) / dt if dt > 0.0 else 0.0
         return ReservoirState(pressure=P_new, temperature=T_new, mass=m_new), q_report
@@ -526,14 +530,15 @@ class MonteCarloConfig:
 
 def run_monte_carlo(
     base_props: ReservoirProperties,
-    schedule_fn: Callable[[float], list[SchedulePeriod]],
+    schedule_fn: Callable[[float], list[SchedulePeriod]] | list[SchedulePeriod],
     mc_cfg: MonteCarloConfig,
     dt_days: float = 1.0,
     tau_days: float | None = None,
     seed: int = 42,
 ) -> dict[str, dict[str, float]]:
     rng = random.Random(seed)
-    eos = PengRobinsonH2()
+    vt = getattr(base_props, "volume_translation", 0.0)
+    eos = PengRobinsonH2(volume_translation=vt)
     dt = dt_days * 86400.0
     metric_values: dict[str, list[float]] = {}
 
@@ -544,6 +549,20 @@ def run_monte_carlo(
         k = 10.0**logk
         T_g = max(250.0, rng.gauss(mc_cfg.geothermal_T_mean, mc_cfg.geothermal_T_std))
         A = max(1.0e4, rng.gauss(mc_cfg.area_mean, mc_cfg.area_std))
+        re = base_props.drainage_radius if base_props.is_cavern else math.sqrt(A / math.pi)
+        pm = (
+            PoreVolumeModel(
+                model=base_props.pore_model.model,
+                V0=A * h * phi,
+                P0=base_props.pore_model.P0,
+                total_compressibility=base_props.pore_model.total_compressibility,
+                P_gate=base_props.pore_model.P_gate,
+                k_gate=base_props.pore_model.k_gate,
+                V_ratio=base_props.pore_model.V_ratio,
+            )
+            if base_props.pore_model is not None
+            else None
+        )
 
         rp = ReservoirProperties(
             area=A,
@@ -554,9 +573,14 @@ def run_monte_carlo(
             reference_pressure=base_props.reference_pressure,
             reference_temperature=T_g,
             well_radius=base_props.well_radius,
-            drainage_radius=base_props.drainage_radius,
+            drainage_radius=re,
             is_cavern=base_props.is_cavern,
             n_wells=base_props.n_wells,
+            pore_model=pm,
+            isotherm=base_props.isotherm,
+            m_sorbent=base_props.m_sorbent,
+            volume_translation=base_props.volume_translation,
+            peneloux=base_props.peneloux,
         )
 
         model = UHSReservoir0D(rp, eos=eos, tau_days=tau_days)
@@ -564,7 +588,7 @@ def run_monte_carlo(
         T0 = rp.reference_temperature
         m0 = model.mass_from_state(P0, T0)
         state = ReservoirState(pressure=P0, temperature=T0, mass=m0)
-        sched = schedule_fn(P0)
+        sched = schedule_fn(P0) if callable(schedule_fn) else schedule_fn
         result = model.run_schedule(state, sched, dt, collect_time_series=False)
 
         for k_met, v_met in result.metrics.items():

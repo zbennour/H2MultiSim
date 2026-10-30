@@ -1,4 +1,5 @@
 """Characterization test for 2D single-well scenario (golden values)."""
+
 from __future__ import annotations
 
 from h2multisim.models.two_d import UHSAreal2D, scenario_single_well

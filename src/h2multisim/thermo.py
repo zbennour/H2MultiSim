@@ -51,7 +51,7 @@ P_NTP: float = 101325.0  # Pa
 MU_NTP: float = 8.948e-6  # Pa·s (NIST)
 
 # Operational limits
-T_FLOOR: float = T_C + 0.5  # K minimum valid temperature
+T_FLOOR: float = 50.0  # K minimum valid temperature for EOS & Shomate correlations
 
 
 class PengRobinsonH2:
@@ -163,17 +163,18 @@ class PengRobinsonH2:
         P_val = max(float(P), 1.0)
         T_val = self._safe_T(T)
         Z = self.z_factor(P_val, T_val)
+        c = self.volume_translation
+        Z_pr = Z + c * P_val / (R_UNIVERSAL * T_val)
         A, B = self._AB(P_val, T_val)
         s2 = math.sqrt(2.0)
         ln_phi = (
-            (Z - 1.0)
-            - math.log(max(Z - B, 1e-12))
+            (Z_pr - 1.0)
+            - math.log(max(Z_pr - B, 1e-12))
             - A
             / (2.0 * s2 * max(B, 1e-12))
-            * math.log(max((Z + (1.0 + s2) * B) / (Z + (1.0 - s2) * B), 1e-12))
+            * math.log(max((Z_pr + (1.0 + s2) * B) / (Z_pr + (1.0 - s2) * B), 1e-12))
         )
-        # Peneloux volume-translation correction to fugacity.
-        c = self.volume_translation
+        # Peneloux volume-translation correction to fugacity (applied once).
         if c != 0.0:
             ln_phi -= c * P_val / (R_UNIVERSAL * T_val)
         return math.exp(max(-50.0, min(50.0, ln_phi)))
@@ -185,28 +186,28 @@ class PengRobinsonH2:
     def isothermal_compressibility(self, P: float, T: float) -> float:
         """Isothermal gas compressibility cg = (1/ρ) · (∂ρ/∂P)_T [Pa⁻¹]."""
         P_val = max(float(P), 1.0)
-        T_val = max(float(T), 50.0)
+        T_val = self._safe_T(T)
         dP = P_val * 1e-4 + 1.0
         drho = self.density(P_val + dP, T_val) - self.density(max(P_val - dP, 1.0), T_val)
         return drho / (2.0 * dP * max(self.density(P_val, T_val), 1e-12))
 
     def da_dT(self, T: float) -> float:
         """First derivative of EOS attraction parameter da/dT."""
-        T_eff = max(float(T), 1e-3)
+        T_eff = self._safe_T(T)
         Tr = T_eff / T_C
         sqTr = math.sqrt(Tr)
         return self.ac * (-self.kappa * (1.0 + self.kappa * (1.0 - sqTr)) / sqTr) / T_C
 
     def d2a_dT2(self, T: float) -> float:
         """Second derivative of EOS attraction parameter d²a/dT²."""
-        T_eff = max(float(T), 1e-3)
+        T_eff = self._safe_T(T)
         Tr = T_eff / T_C
         sqTr = math.sqrt(Tr)
         return self.ac * self.kappa * (1.0 + self.kappa) / (2.0 * Tr * sqTr) / T_C**2
 
     def viscosity(self, P: float, T: float) -> float:
-        """Dynamic viscosity [Pa·s] using NIST-calibrated Chapman-Enskog."""
-        return viscosity_h2(T, P)
+        """Dynamic viscosity [Pa·s] using NIST-calibrated Chapman-Enskog + Muzny."""
+        return viscosity_h2(T, P, eos=self)
 
 
 # ── Ideal-gas heat capacity ──────────────────────────────────────────────────
@@ -237,7 +238,8 @@ def gamma_real_h2(T: float, P: float, eos: PengRobinsonH2 | None = None) -> floa
 
     T_val = max(float(T), 50.0)
     P_val = max(float(P), 1.0)
-    Vm = eos.molar_volume(P_val, T_val)
+    # Evaluate cubic departure functions at the untranslated PR molar volume V_PR = Vm + c
+    Vm = eos.molar_volume(P_val, T_val) + eos.volume_translation
     b = eos.b
     R = R_UNIVERSAL
 
@@ -280,7 +282,7 @@ def cp_real_h2(T: float, P: float, eos: PengRobinsonH2 | None = None) -> float:
 
     T_val = max(float(T), 50.0)
     P_val = max(float(P), 1.0)
-    Vm = eos.molar_volume(P_val, T_val)
+    Vm = eos.molar_volume(P_val, T_val) + eos.volume_translation
     b = eos.b
     s2 = math.sqrt(2.0)
     d2a = eos.d2a_dT2(T_val)
@@ -355,7 +357,7 @@ def joule_thomson_coefficient(T: float, P: float, eos: PengRobinsonH2 | None = N
     Physical note: Below the inversion temperature (~202 K at 1 bar), μ_JT > 0.
     At UHS reservoir conditions (T > 250 K), μ_JT < 0 (H2 warms on isenthalpic expansion).
     """
-    if eos is None:
+    if eos is None or eos.volume_translation == 0.0:
         eos = PengRobinsonH2(volume_translation=-4.0e-6)
 
     T_val = max(float(T), 50.0)

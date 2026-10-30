@@ -30,7 +30,7 @@ def main() -> None:
     print(f"Drainage Radius          : {props.r_ext:.1f} m")
     print(f"Final Wellbore Pressure  : {pa_to_bar(m['final_BHP_Pa']):.2f} bar")
     print(f"Average Reservoir P      : {pa_to_bar(m['final_avg_P_Pa']):.2f} bar")
-    print(f"Total Gas Cycled         : {m['total_injected_kg'] / 1e3:.2f} tonnes")
+    print(f"Total Gas Cycled         : {m['cycled_gas_kg'] / 1e3:.2f} tonnes")
     print("=" * 60)
 
 

@@ -149,6 +149,7 @@ class UHSAreal2D:
         self.max_picard = max_picard
         self.picard_tol_Pa = picard_tol_Pa
         self.tau_s = props.tau_days * 86400.0
+        self._last_picard_residual_Pa: float = 0.0
 
         self.nx = props.nx
         self.ny = props.ny
@@ -159,7 +160,21 @@ class UHSAreal2D:
 
         self.Vp = props.phi * self.dx * self.dy * props.h
 
+        seen_names: set[str] = set()
+        self._well_by_name: dict[str, WellSpec2D] = {}
+        for w in self.wells:
+            if w.name in seen_names:
+                raise ValueError(f"Duplicate well name: {w.name!r}")
+            if not (0 <= w.i < self.nx and 0 <= w.j < self.ny):
+                raise ValueError(
+                    f"Well {w.name!r} index ({w.i}, {w.j}) out of bounds for grid ({self.nx}, {self.ny})"
+                )
+            seen_names.add(w.name)
+            self._well_by_name[w.name] = w
+
         if props.k_field is not None:
+            if len(props.k_field) != props.nx or any(len(row) != props.ny for row in props.k_field):
+                raise ValueError(f"k_field dimensions must match (nx={props.nx}, ny={props.ny})")
             self.k = props.k_field
         else:
             self.k = [[props.k] * props.ny for _ in range(props.nx)]
@@ -182,8 +197,8 @@ class UHSAreal2D:
         kh = self._k_harm_x(i, j)
         rhoL = self.eos.density(P[i][j], T[i][j])
         rhoR = self.eos.density(P[i + 1][j], T[i + 1][j])
-        muL = viscosity_h2(T[i][j], P[i][j])
-        muR = viscosity_h2(T[i + 1][j], P[i + 1][j])
+        muL = viscosity_h2(T[i][j], P[i][j], rho=rhoL)
+        muR = viscosity_h2(T[i + 1][j], P[i + 1][j], rho=rhoR)
         rho_h = 2.0 * rhoL * rhoR / (rhoL + rhoR + 1e-30)
         mu_h = 2.0 * muL * muR / (muL + muR + 1e-30)
         return kh * self.props.h * self.dy * rho_h / (mu_h * self.dx)
@@ -192,8 +207,8 @@ class UHSAreal2D:
         kh = self._k_harm_y(i, j)
         rhoB = self.eos.density(P[i][j], T[i][j])
         rhoT = self.eos.density(P[i][j + 1], T[i][j + 1])
-        muB = viscosity_h2(T[i][j], P[i][j])
-        muT = viscosity_h2(T[i][j + 1], P[i][j + 1])
+        muB = viscosity_h2(T[i][j], P[i][j], rho=rhoB)
+        muT = viscosity_h2(T[i][j + 1], P[i][j + 1], rho=rhoT)
         rho_h = 2.0 * rhoB * rhoT / (rhoB + rhoT + 1e-30)
         mu_h = 2.0 * muB * muT / (muB + muT + 1e-30)
         return kh * self.props.h * self.dx * rho_h / (mu_h * self.dy)
@@ -204,12 +219,10 @@ class UHSAreal2D:
         ln_r = max(ln_r, 0.1)
         k_w = self.k[w.i][w.j]
         rho = self.eos.density(P[w.i][w.j], T[w.i][w.j])
-        mu = viscosity_h2(T[w.i][w.j], P[w.i][w.j])
+        mu = viscosity_h2(T[w.i][w.j], P[w.i][w.j], rho=rho)
         return 2.0 * math.pi * k_w * self.props.h * rho / (mu * ln_r)
 
-    def _assemble_well_contributions_2d(
-        self, ctrl, Pk, Tk, rate_q, shut_wells, nx, ny
-    ):
+    def _assemble_well_contributions_2d(self, ctrl, Pk, Tk, rate_q, shut_wells, nx, ny):
         well_diag = [[0.0] * ny for _ in range(nx)]
         well_rhs = [[0.0] * ny for _ in range(nx)]
         wi_now: dict[str, float] = {}
@@ -311,6 +324,7 @@ class UHSAreal2D:
                     break
 
             change = max(abs(P_new[i][j] - Pk[i][j]) for i in range(nx) for j in range(ny))
+            self._last_picard_residual_Pa = change
             Pk = P_new
             if change < self.picard_tol_Pa:
                 break
@@ -398,7 +412,7 @@ class UHSAreal2D:
             # A capped well whose BHP constraint is satisfied is not actually
             # rate-limited: revert it to BHP control.
             for name in list(rate_q):
-                w = next(ww for ww in self.wells if ww.name == name)
+                w = self._well_by_name[name]
                 mode_w = ctrl.mode_for(name)
                 P_w = P_new[w.i][w.j]
                 binding = (mode_w == "inject" and P_w <= ctrl.bhp_target) or (
@@ -411,7 +425,7 @@ class UHSAreal2D:
             # Re-open shut wells if the pressure has moved back to the side
             # where the well can flow in its intended direction.
             for name in list(shut_wells):
-                w = next(ww for ww in self.wells if ww.name == name)
+                w = self._well_by_name[name]
                 mode_w = ctrl.mode_for(name)
                 P_w = P_new[w.i][w.j]
                 if (mode_w == "inject" and P_w < ctrl.bhp_target) or (
@@ -420,7 +434,7 @@ class UHSAreal2D:
                     shut_wells.remove(name)
                     changed = True
 
-            # No-backflow constraint for BHP-controlled wells.
+            # No-backflow and post-solve rate-cap constraints for BHP-controlled wells.
             for w in self.wells:
                 mode_w = ctrl.mode_for(w.name)
                 if mode_w == "shut_in" or w.name in rate_q or w.name in shut_wells:
@@ -429,33 +443,14 @@ class UHSAreal2D:
                 if (mode_w == "inject" and q_w < 0.0) or (mode_w == "withdraw" and q_w > 0.0):
                     shut_wells.add(w.name)
                     changed = True
+                elif ctrl.q_max > 0.0 and abs(q_w) > ctrl.q_max * (1.0 + 1e-6):
+                    rate_q[w.name] = math.copysign(ctrl.q_max, q_w)
+                    changed = True
 
             if not changed:
                 break
 
         return P_new, T_new, per_well
-
-    def _update_temperature(
-        self,
-        P_old: list[list[float]],
-        P_new: list[list[float]],
-        T_old: list[list[float]],
-        dt: float,
-    ) -> list[list[float]]:
-        T_geo = self.props.T_init
-        T_new = [[0.0] * self.ny for _ in range(self.nx)]
-        for i in range(self.nx):
-            for j in range(self.ny):
-                T_new[i][j] = coupled_temperature_update(
-                    T_old=T_old[i][j],
-                    P_old=max(P_old[i][j], 1.0),
-                    P_new=max(P_new[i][j], 1.0),
-                    T_geothermal=T_geo,
-                    dt_s=dt,
-                    tau_s=self.tau_s,
-                    eos=self.eos,
-                )
-        return T_new
 
     def run_schedule(
         self,
@@ -478,6 +473,7 @@ class UHSAreal2D:
         t_d = 0.0
         cum_inj = 0.0
         cum_wdr = 0.0
+        max_picard_res = 0.0
 
         P_max = self.props.P_init
         P_min = self.props.P_init
@@ -490,10 +486,11 @@ class UHSAreal2D:
         )
 
         for ctrl in schedule:
-            n_steps = max(int(ctrl.duration_d / dt_days), 1)
+            n_steps = max(round(ctrl.duration_d / dt_days), 1)
             dt_act = ctrl.duration_d * 86400.0 / n_steps
             for _ in range(n_steps):
                 P_new, T_new, per_well = self._solve_pressure(P, T, ctrl, dt_act)
+                max_picard_res = max(max_picard_res, self._last_picard_residual_Pa)
                 t_d += dt_act / 86400.0
 
                 q_inj = sum(max(q, 0.0) for q, _ in per_well.values())
@@ -530,7 +527,7 @@ class UHSAreal2D:
                 result.mass_t.append(kg_to_tonnes(m_tot))
                 result.q_total_kg_s.append(total_q)
 
-                while snap_idx < len(snap_targets) and t_d >= snap_targets[snap_idx]:
+                while snap_idx < len(snap_targets) and t_d >= snap_targets[snap_idx] - 1e-9:
                     result.snapshots.append(
                         Snapshot2D(
                             time_d=t_d,
@@ -564,6 +561,8 @@ class UHSAreal2D:
             "net_stored_t": kg_to_tonnes(net_kg),
             "cycled_gas_t": kg_to_tonnes(cum_inj + cum_wdr),
             "mass_balance_error": mb_err,
+            "max_picard_residual_Pa": max_picard_res,
+            "converged": 1.0 if max_picard_res < self.picard_tol_Pa else 0.0,
         }
         return result
 
