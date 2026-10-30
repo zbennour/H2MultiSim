@@ -85,6 +85,13 @@ class Schedule3D:
     duration_d: float  # days
     bhp_target: float  # Pa
     q_max: float  # kg/s total rate limit
+    well_modes: dict[str, str] | None = None  # optional per-well override
+
+    def mode_for(self, well_name: str) -> str:
+        """Operating mode for a named well (falls back to the period mode)."""
+        if self.well_modes and well_name in self.well_modes:
+            return self.well_modes[well_name]
+        return self.mode
 
 
 SchedulePeriod3D = Schedule3D
@@ -153,6 +160,7 @@ class UHSFieldScale3D:
         self.hydrostatic_init = hydrostatic_init
         self.tau_s = props.tau_days * 86400.0
         self.g = G_GRAV
+        self._last_picard_residual_Pa: float = 0.0
 
         self.nx = props.nx
         self.ny = props.ny
@@ -166,6 +174,22 @@ class UHSFieldScale3D:
         self.zs = [(k + 0.5) * self.dz for k in range(self.nz)]
 
         self.Vp = props.phi * self.dx * self.dy * self.dz
+
+        seen_names: set[str] = set()
+        self._well_by_name: dict[str, WellSpec3D] = {}
+        for w in self.wells:
+            if w.name in seen_names:
+                raise ValueError(f"Duplicate well name: {w.name!r}")
+            if not (0 <= w.i < self.nx and 0 <= w.j < self.ny):
+                raise ValueError(
+                    f"Well {w.name!r} index ({w.i}, {w.j}) out of bounds for grid ({self.nx}, {self.ny})"
+                )
+            if not (0 <= w.k_min <= w.k_max < self.nz):
+                raise ValueError(
+                    f"Well {w.name!r} perforation interval [{w.k_min}, {w.k_max}] out of bounds for nz={self.nz}"
+                )
+            seen_names.add(w.name)
+            self._well_by_name[w.name] = w
 
         if props.k_layers is not None:
             if len(props.k_layers) != props.nz:
@@ -198,8 +222,8 @@ class UHSFieldScale3D:
         kh = self._k_harm_x(i, j, k)
         rhoL = self.eos.density(P[i][j][k], T[i][j][k])
         rhoR = self.eos.density(P[i + 1][j][k], T[i + 1][j][k])
-        muL = viscosity_h2(T[i][j][k], P[i][j][k])
-        muR = viscosity_h2(T[i + 1][j][k], P[i + 1][j][k])
+        muL = viscosity_h2(T[i][j][k], P[i][j][k], rho=rhoL)
+        muR = viscosity_h2(T[i + 1][j][k], P[i + 1][j][k], rho=rhoR)
         rho_h = 2.0 * rhoL * rhoR / (rhoL + rhoR + 1e-30)
         mu_h = 2.0 * muL * muR / (muL + muR + 1e-30)
         return kh * self.dy * self.dz * rho_h / (mu_h * self.dx)
@@ -210,8 +234,8 @@ class UHSFieldScale3D:
         kh = self._k_harm_y(i, j, k)
         rhoB = self.eos.density(P[i][j][k], T[i][j][k])
         rhoT = self.eos.density(P[i][j + 1][k], T[i][j + 1][k])
-        muB = viscosity_h2(T[i][j][k], P[i][j][k])
-        muT = viscosity_h2(T[i][j + 1][k], P[i][j + 1][k])
+        muB = viscosity_h2(T[i][j][k], P[i][j][k], rho=rhoB)
+        muT = viscosity_h2(T[i][j + 1][k], P[i][j + 1][k], rho=rhoT)
         rho_h = 2.0 * rhoB * rhoT / (rhoB + rhoT + 1e-30)
         mu_h = 2.0 * muB * muT / (muB + muT + 1e-30)
         return kh * self.dx * self.dz * rho_h / (mu_h * self.dy)
@@ -222,8 +246,8 @@ class UHSFieldScale3D:
         kh = self._k_harm_z(i, j, k)
         rhoD = self.eos.density(P[i][j][k], T[i][j][k])
         rhoU = self.eos.density(P[i][j][k + 1], T[i][j][k + 1])
-        muD = viscosity_h2(T[i][j][k], P[i][j][k])
-        muU = viscosity_h2(T[i][j][k + 1], P[i][j][k + 1])
+        muD = viscosity_h2(T[i][j][k], P[i][j][k], rho=rhoD)
+        muU = viscosity_h2(T[i][j][k + 1], P[i][j][k + 1], rho=rhoU)
         rho_h = 2.0 * rhoD * rhoU / (rhoD + rhoU + 1e-30)
         mu_h = 2.0 * muD * muU / (muD + muU + 1e-30)
         return kh * self.dx * self.dy * rho_h / (mu_h * self.dz)
@@ -236,7 +260,7 @@ class UHSFieldScale3D:
         ln_r = max(ln_r, 0.1)
         k_w = self._k_cell(w.i, w.j, k)
         rho = self.eos.density(P[w.i][w.j][k], T[w.i][w.j][k])
-        mu = viscosity_h2(T[w.i][w.j][k], P[w.i][w.j][k])
+        mu = viscosity_h2(T[w.i][w.j][k], P[w.i][w.j][k], rho=rho)
         return 2.0 * math.pi * k_w * self.dz * rho / (mu * ln_r)
 
     def _gravity_dp(
@@ -265,7 +289,8 @@ class UHSFieldScale3D:
             for kl in range(w.k_min, w.k_max + 1):
                 if 0 <= kl < nz:
                     wi_now[w.name][kl] = self._well_index(w, Pk, Tk, kl)
-            if ctrl.mode == "shut_in" or w.name in shut_wells:
+            mode_w = ctrl.mode_for(w.name)
+            if mode_w == "shut_in" or w.name in shut_wells:
                 continue
             if w.name in rate_q:
                 sum_wi = sum(wi_now[w.name].values())
@@ -420,6 +445,7 @@ class UHSFieldScale3D:
                 for j in range(ny)
                 for k in range(nz)
             )
+            self._last_picard_residual_Pa = change
             Pk = P_new
             if change < self.picard_tol_Pa:
                 break
@@ -452,7 +478,8 @@ class UHSFieldScale3D:
                 if 0 <= kl < nz
             }
             k_mid = (w.k_min + w.k_max) // 2
-            if ctrl.mode == "shut_in" or w.name in shut_wells:
+            mode_w = ctrl.mode_for(w.name)
+            if mode_w == "shut_in" or w.name in shut_wells:
                 q_total = 0.0
                 bhp = Pk[w.i][w.j][k_mid]
             elif w.name in rate_q:
@@ -530,19 +557,19 @@ class UHSFieldScale3D:
 
         rate_q: dict[str, float] = {}
         shut_wells: set[str] = set()
-        if ctrl.mode != "shut_in":
-            for w in self.wells:
-                q_try = 0.0
-                for kl in range(w.k_min, w.k_max + 1):
-                    if 0 <= kl < nz:
-                        wi = self._well_index(w, P_old, T_old, kl)
-                        q_try += wi * (ctrl.bhp_target - P_old[w.i][w.j][kl])
-                if (ctrl.mode == "inject" and q_try < 0.0) or (
-                    ctrl.mode == "withdraw" and q_try > 0.0
-                ):
-                    shut_wells.add(w.name)
-                elif ctrl.q_max > 0.0 and abs(q_try) > ctrl.q_max:
-                    rate_q[w.name] = math.copysign(ctrl.q_max, q_try)
+        for w in self.wells:
+            mode_w = ctrl.mode_for(w.name)
+            if mode_w == "shut_in":
+                continue
+            q_try = 0.0
+            for kl in range(w.k_min, w.k_max + 1):
+                if 0 <= kl < nz:
+                    wi = self._well_index(w, P_old, T_old, kl)
+                    q_try += wi * (ctrl.bhp_target - P_old[w.i][w.j][kl])
+            if (mode_w == "inject" and q_try < 0.0) or (mode_w == "withdraw" and q_try > 0.0):
+                shut_wells.add(w.name)
+            elif ctrl.q_max > 0.0 and abs(q_try) > ctrl.q_max:
+                rate_q[w.name] = math.copysign(ctrl.q_max, q_try)
 
         P_new = [[list(P_old[i][j]) for j in range(ny)] for i in range(nx)]
         T_new = [[list(T_old[i][j]) for j in range(ny)] for i in range(nx)]
@@ -554,63 +581,43 @@ class UHSFieldScale3D:
             changed = False
 
             for name in list(rate_q):
-                w = next(ww for ww in self.wells if ww.name == name)
+                mode_w = ctrl.mode_for(name)
                 bhp_rc = per_well[name][1]
-                binding = (ctrl.mode == "inject" and bhp_rc <= ctrl.bhp_target) or (
-                    ctrl.mode == "withdraw" and bhp_rc >= ctrl.bhp_target
+                binding = (mode_w == "inject" and bhp_rc <= ctrl.bhp_target) or (
+                    mode_w == "withdraw" and bhp_rc >= ctrl.bhp_target
                 )
                 if not binding:
                     del rate_q[name]
                     changed = True
 
             for name in list(shut_wells):
-                w = next(ww for ww in self.wells if ww.name == name)
+                w = self._well_by_name[name]
+                mode_w = ctrl.mode_for(name)
                 q_try = sum(
                     self._well_index(w, P_new, T_new, kl) * (ctrl.bhp_target - P_new[w.i][w.j][kl])
                     for kl in range(w.k_min, w.k_max + 1)
                     if 0 <= kl < nz
                 )
-                if (ctrl.mode == "inject" and q_try > 0.0) or (
-                    ctrl.mode == "withdraw" and q_try < 0.0
-                ):
+                if (mode_w == "inject" and q_try > 0.0) or (mode_w == "withdraw" and q_try < 0.0):
                     shut_wells.remove(name)
                     changed = True
 
             for w in self.wells:
-                if ctrl.mode == "shut_in" or w.name in rate_q or w.name in shut_wells:
+                mode_w = ctrl.mode_for(w.name)
+                if mode_w == "shut_in" or w.name in rate_q or w.name in shut_wells:
                     continue
                 q_w = per_well[w.name][0]
-                if (ctrl.mode == "inject" and q_w < 0.0) or (ctrl.mode == "withdraw" and q_w > 0.0):
+                if (mode_w == "inject" and q_w < 0.0) or (mode_w == "withdraw" and q_w > 0.0):
                     shut_wells.add(w.name)
+                    changed = True
+                elif ctrl.q_max > 0.0 and abs(q_w) > ctrl.q_max * (1.0 + 1e-6):
+                    rate_q[w.name] = math.copysign(ctrl.q_max, q_w)
                     changed = True
 
             if not changed:
                 break
 
         return P_new, T_new, per_well
-
-    def _update_temperature(
-        self,
-        P_old: list[list[list[float]]],
-        P_new: list[list[list[float]]],
-        T_old: list[list[list[float]]],
-        dt: float,
-    ) -> list[list[list[float]]]:
-        T_geo = self.props.T_init
-        T_new = [[[0.0] * self.nz for _ in range(self.ny)] for _ in range(self.nx)]
-        for i in range(self.nx):
-            for j in range(self.ny):
-                for k in range(self.nz):
-                    T_new[i][j][k] = coupled_temperature_update(
-                        T_old=T_old[i][j][k],
-                        P_old=max(P_old[i][j][k], 1.0),
-                        P_new=max(P_new[i][j][k], 1.0),
-                        T_geothermal=T_geo,
-                        dt_s=dt,
-                        tau_s=self.tau_s,
-                        eos=self.eos,
-                    )
-        return T_new
 
     def vertical_pressure_profile(
         self,
@@ -627,12 +634,25 @@ class UHSFieldScale3D:
         if not self.hydrostatic_init:
             return P
         rho0 = self.eos.density(self.props.P_init, self.props.T_init)
-        z_ref = (nz - 1) * self.props.Lz / (2.0 * nz)
+        z_ref = 0.5 * self.props.Lz
+        p_col = [self.props.P_init + rho0 * self.g * (z_ref - self.zs[k]) for k in range(nz)]
+        if nz > 1:
+            for _ in range(10):
+                dp = []
+                for k in range(nz - 1):
+                    rhoD = self.eos.density(p_col[k], self.props.T_init)
+                    rhoU = self.eos.density(p_col[k + 1], self.props.T_init)
+                    rho_h = 2.0 * rhoD * rhoU / (rhoD + rhoU + 1e-30)
+                    dp.append(rho_h * self.g * self.dz)
+                raw = [0.0] * nz
+                for k in range(nz - 2, -1, -1):
+                    raw[k] = raw[k + 1] + dp[k]
+                mean_raw = sum(raw) / nz
+                p_col = [self.props.P_init + (raw[k] - mean_raw) for k in range(nz)]
         for i in range(nx):
             for j in range(ny):
                 for k in range(nz):
-                    z = (k + 0.5) * self.props.Lz / nz
-                    P[i][j][k] = self.props.P_init + rho0 * self.g * (z_ref - z)
+                    P[i][j][k] = p_col[k]
         return P
 
     def run_schedule(
@@ -653,11 +673,14 @@ class UHSFieldScale3D:
             result.per_well_q[w.name] = []
             result.per_well_BHP[w.name] = []
 
-        snap_s = set((td * 86400.0) for td in (snap_times_d or []))
+        snap_targets = sorted(snap_times_d or [])
+        snap_idx = 0
         cum_inj = 0.0
         cum_wdr = 0.0
-        P_max = self.props.P_init
-        P_min = self.props.P_init
+        max_picard_res = 0.0
+        P_init_flat = [P[i][j][k] for i in range(nx) for j in range(ny) for k in range(nz)]
+        P_max = max(P_init_flat) if P_init_flat else self.props.P_init
+        P_min = min(P_init_flat) if P_init_flat else self.props.P_init
         T_max = self.props.T_init
         T_min = self.props.T_init
 
@@ -690,11 +713,11 @@ class UHSFieldScale3D:
                 result.per_well_q[w.name].append(q)
                 result.per_well_BHP[w.name].append(pa_to_bar(BHP))
 
-        _record(0.0, {w.name: (0.0, P[w.i][w.j][w.k_min]) for w in self.wells})
+        _record(0.0, {w.name: (0.0, P[w.i][w.j][(w.k_min + w.k_max) // 2]) for w in self.wells})
 
         for ctrl in schedule:
             t_end = t + ctrl.duration_d * 86400.0
-            n_steps = max(int(ctrl.duration_d / dt_days), 1)
+            n_steps = max(round(ctrl.duration_d / dt_days), 1)
             dt_act = (t_end - t) / n_steps
 
             if verbose:
@@ -705,6 +728,7 @@ class UHSFieldScale3D:
             for _ in range(n_steps):
                 P_old = [[list(P[i][j]) for j in range(ny)] for i in range(nx)]
                 P, T, per_well = self._solve_pressure(P_old, T, ctrl, dt_act)
+                max_picard_res = max(max_picard_res, self._last_picard_residual_Pa)
                 t += dt_act
 
                 q_inj = sum(max(q, 0.0) for q, _ in per_well.values())
@@ -722,33 +746,25 @@ class UHSFieldScale3D:
 
                 _record(q_tot, per_well)
 
-                for ts in snap_s:
-                    if abs(t - ts) < dt_act * 0.6:
-                        result.snapshots.append(
-                            Snapshot3D(
-                                time_d=t / 86400.0,
-                                xs_m=[
-                                    self.xs[i]
-                                    for i in range(nx)
-                                    for _ in range(ny)
-                                    for _ in range(nz)
-                                ],
-                                ys_m=[
-                                    self.ys[j]
-                                    for _ in range(nx)
-                                    for j in range(ny)
-                                    for _ in range(nz)
-                                ],
-                                zs_m=[
-                                    self.zs[k]
-                                    for _ in range(nx)
-                                    for _ in range(ny)
-                                    for k in range(nz)
-                                ],
-                                P_Pa=P_flat,
-                                T_K=T_flat,
-                            )
+                t_d = t / 86400.0
+                while snap_idx < len(snap_targets) and t_d >= snap_targets[snap_idx] - 1e-9:
+                    result.snapshots.append(
+                        Snapshot3D(
+                            time_d=t_d,
+                            xs_m=[
+                                self.xs[i] for i in range(nx) for _ in range(ny) for _ in range(nz)
+                            ],
+                            ys_m=[
+                                self.ys[j] for _ in range(nx) for j in range(ny) for _ in range(nz)
+                            ],
+                            zs_m=[
+                                self.zs[k] for _ in range(nx) for _ in range(ny) for k in range(nz)
+                            ],
+                            P_Pa=P_flat,
+                            T_K=T_flat,
                         )
+                    )
+                    snap_idx += 1
 
         m_max = max(result.mass_t) if result.mass_t else 0.0
         m_min = min(result.mass_t) if result.mass_t else 0.0
@@ -773,6 +789,8 @@ class UHSFieldScale3D:
             "net_stored_t": kg_to_tonnes(net_kg),
             "cycled_gas_t": kg_to_tonnes(cum_inj + cum_wdr),
             "mass_balance_error": mb_err,
+            "max_picard_residual_Pa": max_picard_res,
+            "converged": 1.0 if max_picard_res < self.picard_tol_Pa else 0.0,
         }
         return result
 

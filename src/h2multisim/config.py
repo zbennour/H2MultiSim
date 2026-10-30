@@ -31,6 +31,10 @@ from h2multisim.models.zero_d import (
     ReservoirProperties,
     SchedulePeriod,
 )
+from h2multisim.thermo import (
+    IsothermModel,
+    PoreVolumeModel,
+)
 from h2multisim.units import bar_to_pa, mD_to_m2
 
 
@@ -74,18 +78,62 @@ def _perm(d: dict[str, Any]) -> float:
 
 
 def _props_0d(d: dict[str, Any]) -> ReservoirProperties:
+    area = float(d["area"])
+    thickness = float(d["thickness"])
+    porosity = float(d["porosity"])
+    ct = float(d["total_compressibility"])
+    p_ref = _pa(d["reference_pressure"])
+
+    pm_raw = d.get("pore_model")
+    pore_model: PoreVolumeModel | None = None
+    if isinstance(pm_raw, dict):
+        pore_model = PoreVolumeModel(
+            model=str(pm_raw.get("model", "elastic")),
+            V0=float(pm_raw.get("V0", area * thickness * porosity)),
+            P0=_pa(pm_raw.get("P0", p_ref)),
+            total_compressibility=float(pm_raw.get("total_compressibility", ct)),
+            P_gate=_pa(pm_raw.get("P_gate", 5e6)),
+            k_gate=float(pm_raw.get("k_gate", 1e-6)),
+            V_ratio=float(pm_raw.get("V_ratio", 2.0)),
+        )
+    elif isinstance(pm_raw, str):
+        pore_model = PoreVolumeModel(
+            model=pm_raw,
+            V0=area * thickness * porosity,
+            P0=p_ref,
+            total_compressibility=ct,
+        )
+
+    iso_raw = d.get("isotherm")
+    isotherm: IsothermModel | None = None
+    if isinstance(iso_raw, dict):
+        isotherm = IsothermModel(
+            model=str(iso_raw.get("model", "langmuir")),
+            n_max1=float(iso_raw.get("n_max1", 20.0)),
+            K0_1=float(iso_raw.get("K0_1", 1e-7)),
+            n_max2=float(iso_raw.get("n_max2", 5.0)),
+            K0_2=float(iso_raw.get("K0_2", 5e-8)),
+            T_ref=float(iso_raw.get("T_ref", 298.0)),
+            dH1=float(iso_raw.get("dH1", -6000.0)),
+            dH2=float(iso_raw.get("dH2", -4000.0)),
+        )
+    elif isinstance(iso_raw, str):
+        isotherm = IsothermModel(model=iso_raw)
+
     return ReservoirProperties(
-        area=float(d["area"]),
-        thickness=float(d["thickness"]),
-        porosity=float(d["porosity"]),
-        total_compressibility=float(d["total_compressibility"]),
+        area=area,
+        thickness=thickness,
+        porosity=porosity,
+        total_compressibility=ct,
         permeability=_perm(d),
-        reference_pressure=_pa(d["reference_pressure"]),
+        reference_pressure=p_ref,
         reference_temperature=float(d["reference_temperature"]),
         well_radius=float(d["well_radius"]),
         drainage_radius=float(d["drainage_radius"]),
         is_cavern=bool(d.get("is_cavern", False)),
         n_wells=int(d.get("n_wells", 1)),
+        pore_model=pore_model,
+        isotherm=isotherm,
         m_sorbent=float(d.get("m_sorbent", 0.0)),
         volume_translation=float(
             d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
@@ -115,6 +163,12 @@ def _props_1d(d: dict[str, Any]) -> RadialReservoirProps:
 
 
 def _props_2d(d: dict[str, Any]) -> Reservoir2DProps:
+    k_field: list[list[float]] | None = None
+    if d.get("k_field") is not None:
+        k_field = [[float(val) for val in row] for row in d["k_field"]]
+    elif d.get("k_field_mD") is not None:
+        k_field = [[mD_to_m2(float(val)) for val in row] for row in d["k_field_mD"]]
+
     return Reservoir2DProps(
         Lx=float(d["Lx"]),
         Ly=float(d["Ly"]),
@@ -127,6 +181,7 @@ def _props_2d(d: dict[str, Any]) -> Reservoir2DProps:
         nx=int(d["nx"]),
         ny=int(d["ny"]),
         tau_days=float(d.get("tau_days", 30.0)),
+        k_field=k_field,
         volume_translation=float(
             d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
         ),
@@ -135,6 +190,12 @@ def _props_2d(d: dict[str, Any]) -> Reservoir2DProps:
 
 
 def _props_3d(d: dict[str, Any]) -> Reservoir3DProps:
+    k_layers: list[float] | None = None
+    if d.get("k_layers") is not None:
+        k_layers = [float(val) for val in d["k_layers"]]
+    elif d.get("k_layers_mD") is not None:
+        k_layers = [mD_to_m2(float(val)) for val in d["k_layers_mD"]]
+
     return Reservoir3DProps(
         Lx=float(d["Lx"]),
         Ly=float(d["Ly"]),
@@ -148,6 +209,7 @@ def _props_3d(d: dict[str, Any]) -> Reservoir3DProps:
         ny=int(d["ny"]),
         nz=int(d["nz"]),
         tau_days=float(d.get("tau_days", 30.0)),
+        k_layers=k_layers,
         volume_translation=float(
             d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
         ),
@@ -196,6 +258,7 @@ def _sched_3d(items: list[dict[str, Any]]) -> list[Schedule3D]:
                 duration_d=float(it["duration_days"]),
                 bhp_target=_pa(it["bhp_target"]),
                 q_max=float(it["q_max"]),
+                well_modes=it.get("well_modes"),
             )
         )
     return out

@@ -5,13 +5,13 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 31/31 Passed](https://img.shields.io/badge/tests-31%2F31%20passed-brightgreen.svg)](tests/)
+[![Tests: 37/37 Passed](https://img.shields.io/badge/tests-37%2F37%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
 - **0D Tier**: Lumped material balance with an exact mass-state step, active BHP/rate control, and lognormal Monte Carlo uncertainty quantification (UQ).
 - **1D Tier**: Radial finite-volume model on logarithmic grids with implicit Thomas algorithm solving near-wellbore transient drawdowns and buildups.
-- **2D Tier**: Areal Cartesian grid with implicit finite volumes and red-black Gauss-Seidel SOR ($\omega = 1.5$), Picard iteration, and multi-well interference/permeability channeling.
+- **2D Tier**: Areal Cartesian grid with implicit finite volumes and Gauss-Seidel SOR ($\omega = 1.5$), Picard iteration, and multi-well interference/permeability channeling.
 - **3D Tier**: Field-scale Cartesian grid with red-black Gauss-Seidel SOR, layer stratigraphy, and buoyant gravity segregation ($+\rho_{\text{harm}} g \Delta z$).
 
 ---
@@ -19,10 +19,10 @@ H2MultiSim™ is an open-source, dependency-free Python toolkit designed for res
 ## Key Technical Features
 
 ### 1. Robust Real-Gas Thermodynamics (`h2multisim.thermo`)
-- **Closed-Form Analytical PR-EOS**: Solves the cubic Peng-Robinson equation of state using the Cardano/Viète trigonometric method. Guarantees the physical vapor root in a single pass without iterative Newton-Raphson failure or divergence.
-- **Dynamic Viscosity**: Chapman-Enskog formulation; within ~1% at the $333\text{ K}, 82\text{ bar}$ Hogeweg point and ~3% mean over 1–350 bar (max ~9%).
+- **Closed-Form Analytical PR-EOS & Peneloux Volume Translation**: Solves the cubic Peng-Robinson equation of state using the Cardano/Viète trigonometric method, guaranteeing the physical vapor root in a single pass without iterative Newton-Raphson divergence. Optional Peneloux volume translation ($c = -4.0 \times 10^{-6}\text{ m}^3/\text{mol}$) reduces $Z$-factor error below $0.85\%$ across $1\text{–}350\text{ bar}$.
+- **Dynamic Viscosity**: Chapman-Enskog dilute-gas formulation with Muzny et al. (2013) / NIST density-dependent residual correction ($\mu = \mu_0(T) + c_1\rho + c_2\rho^2$), matching CoolProp 8.0.0 within $<1.5\%$ across $250\text{–}450\text{ K}$ and $1\text{–}350\text{ bar}$.
 - **Coupled Thermal Model**: Real-gas isentropic adiabatic heating/cooling combined with exponential thermal relaxation toward geothermal equilibrium.
-- **Joule–Thomson**: Pressure/temperature-dependent coefficient from the PR volume derivative; screening accuracy only (see `AUDIT.md` F-12).
+- **Joule–Thomson**: Analytical real-gas throttling coefficient $\mu_{\text{JT}} = (\partial T/\partial P)_H$ with Peneloux covolume correction, reproducing negative $\mu_{\text{JT}}$ warming across the UHS operating envelope ($\sim 4.5\%$ vs CoolProp at $293.15\text{ K}, 100\text{ bar}$).
 - **Adsorption & Compressibility**: Dual-Site Langmuir (DSL) isotherms and rigid/elastic/breathing-MOF pore-volume models.
 
 ### 2. Multi-Scale Hierarchy
@@ -119,7 +119,7 @@ py -m h2multisim run --scale 2d --scenario thief_zone
 # Run 3D Field-scale gravity segregation simulation
 py -m h2multisim run --scale 3d --scenario gravity_override
 
-# Run complete 24-suite verification test suite
+# Run complete 37-test verification test suite
 py -m h2multisim test
 ```
 
@@ -165,10 +165,11 @@ H2MultiSim/
 ├── pyproject.toml              # PEP 621 packaging and Ruff configuration
 ├── src/
 │   └── h2multisim/
-│       ├── __init__.py         # Public API and package version (1.0.1)
+│       ├── __init__.py         # Public API and package version (1.1.0)
 │       ├── __main__.py         # Module execution entrypoint
 │       ├── cli.py              # Unified CLI (run, test)
-│       ├── thermo.py           # PR-EOS, NIST viscosity, heat capacity, adsorption
+│       ├── config.py           # JSON/YAML run configuration loader
+│       ├── thermo.py           # PR-EOS, Peneloux, NIST/Muzny viscosity, heat capacity, adsorption
 │       ├── units.py            # Dual unit conversions & Cardano cubic solver
 │       └── models/
 │           ├── __init__.py     # Multi-scale exports
@@ -178,7 +179,8 @@ H2MultiSim/
 │           └── three_d.py      # 3D field-scale model with gravity segregation
 ├── tests/
 │   ├── __init__.py
-│   └── test_validation.py     # 31 benchmark tests matching NIST & literature
+│   ├── test_char_2d.py         # 2D single-well golden trajectory characterization test
+│   └── test_validation.py      # 36 benchmark tests matching NIST & literature
 └── README.md                   # Documentation and citation guide
 ```
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import unittest
 
+from h2multisim.config import build_from_config
 from h2multisim.models.one_d import (
     RadialReservoirProps,
     UHSRadial1D,
@@ -22,6 +23,7 @@ from h2multisim.models.one_d import (
 from h2multisim.models.three_d import (
     Schedule3D,
     UHSFieldScale3D,
+    WellSpec3D,
     scenario_gravity_override,
     scenario_layered_reservoir,
     scenario_single_well_3d,
@@ -29,6 +31,7 @@ from h2multisim.models.three_d import (
 from h2multisim.models.two_d import (
     Schedule2D,
     UHSAreal2D,
+    WellSpec2D,
     compute_sweep_efficiency,
     pressure_uniformity,
     scenario_five_spot,
@@ -619,6 +622,179 @@ class TestH2MultiSimValidation(unittest.TestCase):
         # 2D matrix format
         p_matrix = [[p_init, p_init + bar_to_pa(5.0)], [p_init, p_init]]
         self.assertAlmostEqual(compute_sweep_efficiency(p_matrix, p_init), 0.25)
+
+    # ── 35. Peneloux Departure Consistency & Monte Carlo Schedule Fidelity ──
+    def test_35_peneloux_departures_and_mc_schedule(self) -> None:
+        c = -4.0e-6
+        eos_plain = PengRobinsonH2(volume_translation=0.0)
+        eos_pen = PengRobinsonH2(volume_translation=c)
+        P, T = bar_to_pa(250.0), 293.15
+
+        # Constant volume translation must not distort PR heat capacity departures
+        self.assertAlmostEqual(cp_real_h2(T, P, eos_plain), cp_real_h2(T, P, eos_pen), places=10)
+        self.assertAlmostEqual(
+            gamma_real_h2(T, P, eos_plain), gamma_real_h2(T, P, eos_pen), places=10
+        )
+
+        # Peneloux fugacity shift: ln(phi_pen) == ln(phi_plain) - c*P/(R*T)
+        ln_ratio = math.log(
+            eos_pen.fugacity_coefficient(P, T) / eos_plain.fugacity_coefficient(P, T)
+        )
+        expected_shift = -c * P / (R_UNIVERSAL * T)
+        self.assertAlmostEqual(ln_ratio, expected_shift, places=10)
+
+        # Joule-Thomson at 1 bar / 293.15 K must be negative even with plain EOS
+        self.assertLess(joule_thomson_coefficient(293.15, 101325.0, eos_plain), 0.0)
+
+        # Monte Carlo accepts explicit schedule list and preserves Peneloux
+        props = build_okoroafor_reservoir()
+        props.peneloux = True
+        props.__post_init__()
+        sched_list = [SchedulePeriod("inj", "inject", 10.0, bar_to_pa(100.0), 35.0)]
+        mc_cfg = MonteCarloConfig(
+            n_realizations=3,
+            porosity_mean=props.porosity,
+            porosity_std=0.0,
+            thickness_mean=props.thickness,
+            thickness_std=0.0,
+            log10_perm_mean=math.log10(props.permeability),
+            log10_perm_std=0.0,
+            geothermal_T_mean=props.reference_temperature,
+            geothermal_T_std=0.0,
+            area_mean=props.area,
+            area_std=0.0,
+        )
+        mc_stats = run_monte_carlo(props, sched_list, mc_cfg, dt_days=2.0)
+        det = UHSReservoir0D(props).run_schedule(
+            ReservoirState(
+                props.reference_pressure,
+                props.reference_temperature,
+                UHSReservoir0D(props).mass_from_state(
+                    props.reference_pressure, props.reference_temperature
+                ),
+            ),
+            sched_list,
+            dt_s=2.0 * 86400.0,
+        )
+        self.assertAlmostEqual(
+            mc_stats["working_gas_kg"]["p50"], det.metrics["working_gas_kg"], places=3
+        )
+
+    # ── 36. Solver Validation, Hydrostatic Equilibrium & Config Extensions ──
+    def test_36_solver_validation_and_config_extensions(self) -> None:
+        # 1. Duplicate well names and out-of-bounds indices must raise ValueError
+        p2, _, _ = scenario_single_well(6, 6)
+        with self.assertRaises(ValueError):
+            UHSAreal2D(p2, [WellSpec2D(1, 1, name="W"), WellSpec2D(2, 2, name="W")])
+        with self.assertRaises(ValueError):
+            UHSAreal2D(p2, [WellSpec2D(6, 0, name="W1")])
+
+        p3, _, _ = scenario_single_well_3d(4, 4, 3)
+        with self.assertRaises(ValueError):
+            UHSFieldScale3D(
+                p3,
+                [
+                    WellSpec3D(1, 1, 0, 2, name="W"),
+                    WellSpec3D(2, 2, 0, 2, name="W"),
+                ],
+            )
+        with self.assertRaises(ValueError):
+            UHSFieldScale3D(p3, [WellSpec3D(1, 1, 2, 1, name="W1")])
+
+        # 2. 3D Hydrostatic mid-depth datum and exact discrete equilibrium
+        sim3 = UHSFieldScale3D(p3, [WellSpec3D(2, 2, 0, 2, name="W1")])
+        res3 = sim3.run_schedule(
+            [Schedule3D("shut", "shut_in", 0.7, 0.0, 0.0)],
+            snap_times_d=[0.7],
+            dt_days=0.1,
+        )
+        self.assertAlmostEqual(res3.P_avg_bar[0], pa_to_bar(p3.P_init), places=10)
+        self.assertAlmostEqual(res3.P_avg_bar[-1], pa_to_bar(p3.P_init), places=8)
+        self.assertEqual(len(res3.snapshots), 1)
+        self.assertEqual(res3.metrics["converged"], 1.0)
+        self.assertLess(res3.metrics["max_picard_residual_Pa"], 1e-8)
+
+        # 3. 2D float-boundary snapshot capture (sum([0.1]*7) == 0.6999999999999998)
+        sim2 = UHSAreal2D(p2, [WellSpec2D(3, 3, name="W1")])
+        res2 = sim2.run_schedule(
+            [Schedule2D("shut", "shut_in", 0.7, 0.0, 0.0)],
+            snap_days=[0.7],
+            dt_days=0.1,
+        )
+        self.assertEqual(len(res2.snapshots), 1)
+        self.assertEqual(res2.metrics["converged"], 1.0)
+
+        # 4. Config extensions: pore_model, isotherm, k_field_mD, k_layers_mD, 3D well_modes
+        _, props0_cfg, _, _, _, _ = build_from_config(
+            {
+                "scale": "0d",
+                "reservoir": {
+                    "area": 1e5,
+                    "thickness": 20.0,
+                    "porosity": 0.2,
+                    "total_compressibility": 5e-10,
+                    "permeability_mD": 50.0,
+                    "reference_pressure": "80 bar",
+                    "reference_temperature": 315.0,
+                    "well_radius": 0.1,
+                    "drainage_radius": 200.0,
+                    "m_sorbent": 1000.0,
+                    "pore_model": {"model": "rigid"},
+                    "isotherm": {"model": "langmuir", "n_max1": 15.0, "K0_1": 2e-7},
+                },
+                "schedule": [
+                    {
+                        "name": "inj",
+                        "mode": "inject",
+                        "duration_days": 5.0,
+                        "bhp_target": "100 bar",
+                        "max_mass_rate": 10.0,
+                    }
+                ],
+            }
+        )
+        self.assertIsNotNone(props0_cfg.pore_model)
+        self.assertEqual(props0_cfg.pore_model.model, "rigid")
+        self.assertIsNotNone(props0_cfg.isotherm)
+        self.assertEqual(props0_cfg.isotherm.model, "langmuir")
+
+        _, props3_cfg, _, sched3_cfg, _, _ = build_from_config(
+            {
+                "scale": "3d",
+                "reservoir": {
+                    "Lx": 500.0,
+                    "Ly": 500.0,
+                    "Lz": 60.0,
+                    "phi": 0.2,
+                    "permeability_mD": 10.0,
+                    "k_layers_mD": [10.0, 100.0, 10.0],
+                    "Ct": 5e-10,
+                    "P_init": "80 bar",
+                    "T_init": 316.0,
+                    "nx": 4,
+                    "ny": 4,
+                    "nz": 3,
+                },
+                "wells": [
+                    {"i": 1, "j": 1, "k_min": 0, "k_max": 2, "name": "INJ"},
+                    {"i": 2, "j": 2, "k_min": 0, "k_max": 2, "name": "PROD"},
+                ],
+                "schedule": [
+                    {
+                        "name": "inj",
+                        "mode": "inject",
+                        "duration_days": 5.0,
+                        "bhp_target": "100 bar",
+                        "q_max": 20.0,
+                        "well_modes": {"INJ": "inject", "PROD": "shut_in"},
+                    }
+                ],
+            }
+        )
+        self.assertEqual(len(props3_cfg.k_layers), 3)
+        self.assertAlmostEqual(props3_cfg.k_layers[1], mD_to_m2(100.0))
+        self.assertEqual(sched3_cfg[0].mode_for("PROD"), "shut_in")
+        self.assertEqual(sched3_cfg[0].mode_for("INJ"), "inject")
 
 
 if __name__ == "__main__":

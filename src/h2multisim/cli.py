@@ -127,8 +127,7 @@ def _run_0d(args: argparse.Namespace) -> int:
             area_mean=props.area,
             area_std=props.area * 0.1,
         )
-        sched_fn = schedule_cavern if props.is_cavern else schedule_porous_reservoir
-        mc_stats = run_monte_carlo(props, sched_fn, mc_cfg, dt_days=args.dt_days or 2.0)
+        mc_stats = run_monte_carlo(props, sched, mc_cfg, dt_days=args.dt_days or 1.0)
         wg = mc_stats["working_gas_kg"]
         print(
             f"  Working Gas P10: {wg['p10'] / 1e3:.2f} t | P50: {wg['p50'] / 1e3:.2f} t | P90: {wg['p90'] / 1e3:.2f} t"
@@ -142,11 +141,12 @@ def _run_1d(args: argparse.Namespace) -> int:
     if getattr(args, "_props", None) is not None:
         props = args._props
         sched = args._schedule
+        scenario = "config"
     else:
-        if args.scenario is not None and args.scenario not in ("okoroafor", "rough"):
-            _require_scenario("1D", args.scenario, ("okoroafor", "rough"))
+        scenario = args.scenario or "okoroafor"
+        if not _require_scenario("1D", scenario, ("okoroafor", "rough")):
             return 2
-        if args.scenario == "rough":
+        if scenario == "rough":
             props, sched = rough_radial()
         else:
             props, sched = okoroafor_radial()
@@ -156,7 +156,7 @@ def _run_1d(args: argparse.Namespace) -> int:
     dt_days = args.dt_days or 0.2
 
     print("\n=======================================================")
-    print("  H2MultiSim™ 1D Radial Model")
+    print(f"  H2MultiSim™ 1D Radial Model: Scenario [{scenario}]")
     print("=======================================================")
 
     model = UHSRadial1D(props, N=40)
@@ -170,7 +170,7 @@ def _run_1d(args: argparse.Namespace) -> int:
     print(f"  Total Gas Withdrawn      : {m['total_withdrawn_kg'] / 1e3:.2f} tonnes")
     print(f"  Net Gas Stored           : {m['net_stored_kg'] / 1e3:.2f} tonnes")
 
-    csv_path = os.path.join(out_dir, "1d_radial_timeseries.csv")
+    csv_path = os.path.join(out_dir, f"1d_{scenario}_timeseries.csv")
     export_radial_timeseries_csv(result, csv_path)
     print(f"\n  Time series exported -> {os.path.abspath(csv_path)}")
     print("=======================================================\n")
@@ -345,10 +345,10 @@ def main() -> None:
                 from h2multisim.config import load_config
 
                 cfg = load_config(args.config)
-            except (OSError, ValueError, RuntimeError) as exc:  # noqa: BLE001
+                scale, props, wells, sched, dt_days, out_dir = build_from_config(cfg)
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
                 print(f"Error: {exc}", file=sys.stderr)
                 sys.exit(2)
-            scale, props, wells, sched, dt_days, out_dir = build_from_config(cfg)
             args._props = props
             args._wells = wells
             args._schedule = sched
