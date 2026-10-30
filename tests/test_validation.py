@@ -8,10 +8,17 @@ and checks numerical stability across 0D, 1D, 2D, and 3D simulation scales.
 
 from __future__ import annotations
 
+import argparse
+import io
+import json
 import math
+import os
+import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 
-from h2multisim.config import build_from_config
+from h2multisim.cli import _run_0d, _run_1d, _run_2d, _run_3d
+from h2multisim.config import build_from_config, load_config
 from h2multisim.models.one_d import (
     RadialReservoirProps,
     UHSRadial1D,
@@ -52,11 +59,16 @@ from h2multisim.models.zero_d import (
 )
 from h2multisim.thermo import (
     R_UNIVERSAL,
+    IsothermModel,
     PengRobinsonH2,
+    PoreVolumeModel,
     adiabatic_temperature,
     cp_real_h2,
+    cp_specific_ideal_h2,
+    cp_specific_real_h2,
     gamma_real_h2,
     joule_thomson_coefficient,
+    run_thermo_self_test,
     thermal_relaxation_update,
     viscosity_h2,
 )
@@ -795,6 +807,178 @@ class TestH2MultiSimValidation(unittest.TestCase):
         self.assertAlmostEqual(props3_cfg.k_layers[1], mD_to_m2(100.0))
         self.assertEqual(sched3_cfg[0].mode_for("PROD"), "shut_in")
         self.assertEqual(sched3_cfg[0].mode_for("INJ"), "inject")
+
+    # ── 37. CLI Runners, CSV Exporters & Material Models ────────────────────
+    def test_37_cli_csv_and_material_models(self) -> None:
+        # 1. Material models: PoreVolumeModel (rigid, elastic, breathing) & IsothermModel (none, langmuir, dsl)
+        pm_rigid = PoreVolumeModel(model="rigid", V0=1000.0, P0=1e5)
+        self.assertAlmostEqual(pm_rigid.volume(1e7), 1000.0)
+        pm_elastic = PoreVolumeModel(model="elastic", V0=1000.0, P0=1e5, total_compressibility=1e-9)
+        self.assertGreater(pm_elastic.volume(1e7), 1000.0)
+        pm_breath = PoreVolumeModel(
+            model="breathing", V0=1000.0, P_gate=5e6, k_gate=1e-6, V_ratio=2.0
+        )
+        self.assertLess(pm_breath.volume(1e5), pm_breath.volume(1e7))
+
+        iso_none = IsothermModel(model="none")
+        self.assertEqual(iso_none.adsorbed_moles_per_kg(1e7, 300.0, self.eos), 0.0)
+        iso_lang = IsothermModel(model="langmuir", n_max1=20.0, K0_1=1e-7)
+        self.assertGreater(iso_lang.adsorbed_moles_per_kg(1e7, 300.0, self.eos), 0.0)
+        iso_dsl = IsothermModel(model="dsl", n_max1=20.0, K0_1=1e-7, n_max2=5.0, K0_2=5e-8)
+        self.assertGreater(
+            iso_dsl.adsorbed_moles_per_kg(1e7, 300.0, self.eos),
+            iso_lang.adsorbed_moles_per_kg(1e7, 300.0, self.eos),
+        )
+
+        # PengRobinsonH2 convenience wrappers and self-test
+        self.assertTrue(run_thermo_self_test())
+        self.assertGreater(self.eos.molar_volume(8e6, 316.0), 0.0)
+        self.assertGreater(self.eos.isothermal_compressibility(8e6, 316.0), 0.0)
+        self.assertLess(self.eos.da_dT(316.0), 0.0)
+        self.assertGreater(cp_specific_ideal_h2(316.0), 14000.0)
+        self.assertGreater(cp_specific_real_h2(316.0, 8e6, self.eos), 14000.0)
+        self.assertAlmostEqual(
+            self.eos.viscosity(8e6, 316.0), viscosity_h2(316.0, 8e6, eos=self.eos), places=10
+        )
+
+        # 2. CSV exporters and CLI runners in an isolated temp directory
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Test load_config + build_from_config for 1D and 2D (with k_field_mD)
+            cfg_1d_path = os.path.join(tmpdir, "run_1d.json")
+            with open(cfg_1d_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "scale": "1d",
+                        "dt_days": 5.0,
+                        "out_dir": tmpdir,
+                        "reservoir": {
+                            "r_well": 0.1,
+                            "r_ext": 200.0,
+                            "h": 50.0,
+                            "phi": 0.2,
+                            "permeability_mD": 100.0,
+                            "Ct": 5e-10,
+                            "P_init": "80 bar",
+                            "T_init": 316.0,
+                            "peneloux": True,
+                        },
+                        "schedule": [
+                            {
+                                "name": "inj",
+                                "mode": "inject",
+                                "duration_days": 5.0,
+                                "bhp_target": "100 bar",
+                                "q_max": 20.0,
+                            }
+                        ],
+                    },
+                    fh,
+                )
+            cfg_loaded = load_config(cfg_1d_path)
+            scale, props1, _, sched1, dt1, out1 = build_from_config(cfg_loaded)
+            self.assertEqual(scale, "1d")
+            self.assertEqual(props1.volume_translation, -4.0e-6)
+
+            _, props2_cfg, wells2_cfg, sched2_cfg, _, _ = build_from_config(
+                {
+                    "scale": "2d",
+                    "reservoir": {
+                        "Lx": 200.0,
+                        "Ly": 200.0,
+                        "h": 20.0,
+                        "phi": 0.2,
+                        "k": 1e-13,
+                        "k_field_mD": [[10.0, 20.0], [30.0, 40.0]],
+                        "Ct": 5e-10,
+                        "P_init": "8000000 Pa",
+                        "T_init": 316.0,
+                        "nx": 2,
+                        "ny": 2,
+                    },
+                    "wells": [{"i": 0, "j": 0, "name": "W1"}],
+                    "schedule": [
+                        {
+                            "name": "inj",
+                            "mode": "inject",
+                            "duration_days": 2.0,
+                            "bhp_target": "90 bar",
+                            "q_max": 10.0,
+                        }
+                    ],
+                }
+            )
+            self.assertEqual(len(props2_cfg.k_field), 2)
+            self.assertAlmostEqual(props2_cfg.k_field[1][1], mD_to_m2(40.0))
+
+            # Run CLI handlers with captured stdout/stderr
+            buf = io.StringIO()
+            with redirect_stdout(buf), redirect_stderr(buf):
+                # Invalid scenario returns 2
+                self.assertEqual(
+                    _run_0d(
+                        argparse.Namespace(
+                            scenario="invalid", out_dir=tmpdir, dt_days=10.0, mc=False, n_mc=2
+                        )
+                    ),
+                    2,
+                )
+                # Valid 0D with MC
+                self.assertEqual(
+                    _run_0d(
+                        argparse.Namespace(
+                            scenario="teesside", out_dir=tmpdir, dt_days=5.0, mc=True, n_mc=2
+                        )
+                    ),
+                    0,
+                )
+                # Valid 1D from config
+                self.assertEqual(
+                    _run_1d(
+                        argparse.Namespace(
+                            _props=props1,
+                            _schedule=sched1,
+                            scenario=None,
+                            out_dir=out1,
+                            dt_days=dt1,
+                        )
+                    ),
+                    0,
+                )
+                # Valid 2D from config
+                self.assertEqual(
+                    _run_2d(
+                        argparse.Namespace(
+                            _props=props2_cfg,
+                            _wells=wells2_cfg,
+                            _schedule=sched2_cfg,
+                            scenario=None,
+                            out_dir=tmpdir,
+                            dt_days=2.0,
+                        )
+                    ),
+                    0,
+                )
+                # Valid 3D small config
+                p3_small, w3_small, _ = scenario_single_well_3d(3, 3, 2)
+                s3_small = [Schedule3D("inj", "inject", 2.0, bar_to_pa(90.0), 10.0)]
+                self.assertEqual(
+                    _run_3d(
+                        argparse.Namespace(
+                            _props=p3_small,
+                            _wells=w3_small,
+                            _schedule=s3_small,
+                            scenario=None,
+                            out_dir=tmpdir,
+                            dt_days=2.0,
+                        )
+                    ),
+                    0,
+                )
+
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "0d_teesside_timeseries.csv")))
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "1d_config_timeseries.csv")))
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "2d_config_timeseries.csv")))
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "3d_config_timeseries.csv")))
 
 
 if __name__ == "__main__":

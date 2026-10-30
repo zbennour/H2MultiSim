@@ -5,7 +5,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 37/37 Passed](https://img.shields.io/badge/tests-37%2F37%20passed-brightgreen.svg)](tests/)
+[![Tests: 38/38 Passed](https://img.shields.io/badge/tests-38%2F38%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
@@ -119,7 +119,7 @@ py -m h2multisim run --scale 2d --scenario thief_zone
 # Run 3D Field-scale gravity segregation simulation
 py -m h2multisim run --scale 3d --scenario gravity_override
 
-# Run complete 37-test verification test suite
+# Run complete 38-test verification test suite
 py -m h2multisim test
 ```
 
@@ -180,7 +180,7 @@ H2MultiSim/
 ├── tests/
 │   ├── __init__.py
 │   ├── test_char_2d.py         # 2D single-well golden trajectory characterization test
-│   └── test_validation.py      # 36 benchmark tests matching NIST & literature
+│   └── test_validation.py      # 37 benchmark tests matching NIST & literature
 └── README.md                   # Documentation and citation guide
 ```
 
