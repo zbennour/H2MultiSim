@@ -5,11 +5,11 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 40/40 Passed](https://img.shields.io/badge/tests-40%2F40%20passed-brightgreen.svg)](tests/)
+[![Tests: 58/58 Passed](https://img.shields.io/badge/tests-58%2F58%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
-- **0D Tier**: Lumped material balance with an exact mass-state step, active BHP/rate control, and lognormal Monte Carlo uncertainty quantification (UQ).
+- **0D Tier**: Lumped material balance with an exact mass-state step, active BHP/rate control, and Monte Carlo uncertainty quantification (UQ) with log-normal permeability and truncated-normal porosity, thickness, area and temperature.
 - **1D Tier**: Radial finite-volume model on logarithmic grids with implicit Thomas algorithm solving near-wellbore transient drawdowns and buildups.
 - **2D Tier**: Areal Cartesian grid with implicit finite volumes and Gauss-Seidel SOR ($\omega = 1.5$), Picard iteration, and multi-well interference/permeability channeling.
 - **3D Tier**: Field-scale Cartesian grid with red-black Gauss-Seidel SOR, layer stratigraphy, and buoyant gravity segregation ($+\rho_{\text{harm}} g \Delta z$).
@@ -66,7 +66,7 @@ translation ($c=-4.0\times10^{-6}\ \mathrm{m^3/mol}$) reduces the maximum Z erro
 1–350 bar and is supported across all models and JSON/YAML configs via `peneloux=True` or
 `volume_translation=-4.0e-6` (see `AUDIT.md`, finding F-04). Dynamic viscosity incorporates the Muzny
 et al. (2013) density residual correction, achieving <1.5% agreement across the UHS operating window.
-Mass balance in the 0D/1D/2D/3D solvers is closed to better than $10^{-6}$ relative error.
+Mass balance in the 1D/2D/3D solvers (including constant-pressure boundary influx in 1D) is closed to better than $10^{-6}$ relative error. The 0D tier reports step-average rates, so its mass balance holds by construction; solver health is reported by the `converged` / `unconverged_steps` metrics in every tier.
 
 ---
 
@@ -179,7 +179,7 @@ H2MultiSim/
 │   └── bench_analytical_1d.py  # Al-Hussainy real-gas pseudopressure radial line-source benchmark
 ├── src/
 │   └── h2multisim/
-│       ├── __init__.py         # Public API and package version (1.2.0)
+│       ├── __init__.py         # Public API and package version (1.3.1)
 │       ├── __main__.py         # Module execution entrypoint
 │       ├── cli.py              # Unified CLI (run, export-deck, test)
 │       ├── config.py           # JSON/YAML run configuration loader

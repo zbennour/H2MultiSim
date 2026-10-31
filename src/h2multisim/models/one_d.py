@@ -12,6 +12,7 @@ import math
 import os
 from dataclasses import dataclass, field
 
+from h2multisim.models._common import validate_mode
 from h2multisim.thermo import (
     GAS_COMPONENTS,
     M_H2,
@@ -40,7 +41,7 @@ class RadialReservoirProps:
     h: float  # m net pay thickness
     phi: float  # fraction porosity
     k: float  # m² permeability
-    Ct: float  # Pa⁻¹ total compressibility
+    Ct: float  # Pa⁻¹ pore (rock) compressibility; gas compressibility comes from the EOS
     P_init: float  # Pa initial reservoir pressure
     T_init: float  # K initial / geothermal temperature
     skin: float = 0.0  # mechanical skin factor
@@ -77,6 +78,9 @@ class WellControl:
     duration_d: float  # days
     bhp_target: float  # Pa
     q_max: float  # kg/s
+
+    def __post_init__(self) -> None:
+        validate_mode(self.mode, f"well control {self.name!r}")
 
 
 SchedulePeriod1D = WellControl
@@ -178,6 +182,7 @@ class UHSRadial1D:
         self.max_picard = max_picard
         self.picard_tol_Pa = picard_tol_Pa
         self._last_picard_residual_Pa: float = 0.0
+        self._last_boundary_q: float = 0.0  # kg/s influx through a const-pressure outer boundary
 
         self.r_c, self.r_i = build_log_grid(props.r_well, props.r_ext, N)
         self.V_cell = [
@@ -213,6 +218,10 @@ class UHSRadial1D:
         self.y_h2: list[float] = [self._y_init] * N
         self._last_y_new: list[float] = list(self.y_h2)
 
+    def _pv_mult(self, P: float) -> float:
+        """Pore-volume multiplier exp(Ct·(P − P_init)) for rock (pore) compressibility Ct."""
+        return math.exp(self.props.Ct * (P - self.props.P_init))
+
     def _comp_at(self, y_val: float) -> dict[str, float]:
         if self._cushion_gas == "H2" or y_val >= 1.0 - 1e-12:
             return {"H2": 1.0}
@@ -224,6 +233,23 @@ class UHSRadial1D:
         if not self._is_multicomponent:
             return self.eos.density(P_val, T_val)
         return self._mix_eos.density(P_val, T_val, self._comp_at(y_val))
+
+    def _temperature_update(
+        self, T_old: float, P_old: float, P_new: float, dt: float, y_val: float
+    ) -> float:
+        eos: PengRobinsonH2 | PengRobinsonMixture = self.eos
+        if self._is_multicomponent:
+            self._mix_eos.set_composition(self._comp_at(y_val))
+            eos = self._mix_eos
+        return coupled_temperature_update(
+            T_old=T_old,
+            P_old=max(P_old, 1.0),
+            P_new=max(P_new, 1.0),
+            T_geothermal=self.props.T_init,
+            dt_s=dt,
+            tau_s=self.tau_s,
+            eos=eos,
+        )
 
     def _cell_drho_dP(self, P_val: float, T_val: float, y_val: float = 1.0) -> float:
         if not self._is_multicomponent:
@@ -285,6 +311,7 @@ class UHSRadial1D:
         q_well: float,
         dt: float,
         y_old: list[float],
+        P_old: list[float],
     ) -> list[float]:
         """
         Implicit backward-Euler upwind advection-dispersion solver for radial
@@ -293,7 +320,9 @@ class UHSRadial1D:
         N = self.N
         M_cg = GAS_COMPONENTS[self._cushion_gas].molar_mass
         w_old = [(y * M_H2) / max(y * M_H2 + (1.0 - y) * M_cg, 1e-30) for y in y_old]
-        m_cell_old = [max(self.Vp[i] * rho_old[i], 1e-12) for i in range(N)]
+        m_cell_old = [
+            max(self.Vp[i] * self._pv_mult(P_old[i]) * rho_old[i], 1e-12) for i in range(N)
+        ]
 
         # Inter-cell mass flow rate F_i [kg/s] from cell i to cell i+1
         F = [T_half[i] * (Pk[i] - Pk[i + 1]) for i in range(N - 1)]
@@ -351,8 +380,8 @@ class UHSRadial1D:
         Solve one implicit step with a mass-conservative accumulation term.
 
         The accumulation is linearised around the current pressure iterate:
-            Vp·(ρ(P) - ρ_old)/dt ≈ A·(P - P_iter) + Vp·(ρ_iter - ρ_old)/dt
-        with A = Vp·(dρ/dP).  Picard iterations remove the linearisation error,
+            (Vp(P)·ρ(P) - Vp(P_old)·ρ_old)/dt ≈ A·(P - P_iter) + (Vp(P_iter)·ρ_iter - Vp(P_old)·ρ_old)/dt
+        with A = Vp(P_iter)·(dρ/dP + ρ·Ct) and Vp(P) = Vp0·exp(Ct·(P - P_init)).  Picard iterations remove the linearisation error,
         so the discrete mass balance closes to the pressure tolerance.  The
         temperature update is part of the iterate because density depends on T;
         this keeps the well source and the stored mass consistent.
@@ -367,21 +396,10 @@ class UHSRadial1D:
         Pk = list(P_old)
         Tk = list(T_old)
         y_k = list(y_old)
-        T_geo = self.props.T_init
+        T_outer = 0.0
 
         for _picard in range(self.max_picard):
-            Tk = [
-                coupled_temperature_update(
-                    T_old=T_old[i],
-                    P_old=max(P_old[i], 1.0),
-                    P_new=max(Pk[i], 1.0),
-                    T_geothermal=T_geo,
-                    dt_s=dt,
-                    tau_s=self.tau_s,
-                    eos=self.eos,
-                )
-                for i in range(N)
-            ]
+            Tk = [self._temperature_update(T_old[i], P_old[i], Pk[i], dt, y_k[i]) for i in range(N)]
             rho_k = [self._cell_density(Pk[i], Tk[i], y_k[i]) for i in range(N)]
             drho = [self._cell_drho_dP(Pk[i], Tk[i], y_k[i]) for i in range(N)]
 
@@ -406,9 +424,11 @@ class UHSRadial1D:
                         y_k + [self._y_init],
                     )
 
-                A = self.Vp[i] * drho[i] / dt
+                vp_k = self.Vp[i] * self._pv_mult(Pk[i])
+                vp_old = self.Vp[i] * self._pv_mult(P_old[i])
+                A = vp_k * (drho[i] + rho_k[i] * self.props.Ct) / dt
                 # Exact accumulation linearised around Pk.
-                accum = self.Vp[i] * (rho_k[i] - rho_old[i]) / dt
+                accum = (vp_k * rho_k[i] - vp_old * rho_old[i]) / dt
 
                 a[i] = -T_left
                 c[i] = -T_right
@@ -417,6 +437,7 @@ class UHSRadial1D:
 
                 if i == N - 1 and T_right_outer > 0.0:
                     d[N - 1] += T_right_outer * self.props.P_init
+                    T_outer = T_right_outer
 
             if ctrl.mode != "shut_in":
                 if fixed_q is None:
@@ -438,7 +459,9 @@ class UHSRadial1D:
                     q_est = fixed_q
                 else:
                     q_est = WI * (ctrl.bhp_target - Pk[0])
-                y_next = self._solve_transport_step(rho_old, Pk, Tk, T_half, q_est, dt, y_old)
+                y_next = self._solve_transport_step(
+                    rho_old, Pk, Tk, T_half, q_est, dt, y_old, P_old
+                )
                 y_diff = max(abs(y_next[i] - y_k[i]) for i in range(N))
                 y_k = y_next
                 if y_diff > 1e-9:
@@ -448,18 +471,7 @@ class UHSRadial1D:
                 break
 
         # Synchronize final temperature with the converged pressure Pk.
-        Tk = [
-            coupled_temperature_update(
-                T_old=T_old[i],
-                P_old=max(P_old[i], 1.0),
-                P_new=max(Pk[i], 1.0),
-                T_geothermal=T_geo,
-                dt_s=dt,
-                tau_s=self.tau_s,
-                eos=self.eos,
-            )
-            for i in range(N)
-        ]
+        Tk = [self._temperature_update(T_old[i], P_old[i], Pk[i], dt, y_k[i]) for i in range(N)]
 
         if ctrl.mode == "shut_in":
             q = 0.0
@@ -470,6 +482,7 @@ class UHSRadial1D:
             q = WI * (ctrl.bhp_target - Pk[0])
 
         self._last_y_new = y_k
+        self._last_boundary_q = T_outer * (self.props.P_init - Pk[N - 1])
         return Pk, Tk, q
 
     def _solve_pressure(
@@ -543,11 +556,13 @@ class UHSRadial1D:
 
         cum_inj = 0.0
         cum_wdr = 0.0
+        cum_boundary = 0.0
         t = 0.0
         snap_targets = sorted(snap_days or [])
         snap_idx = 0
         m_initial = sum(
-            self._cell_density(P[i], T[i], self.y_h2[i]) * self.Vp[i] for i in range(self.N)
+            self._cell_density(P[i], T[i], self.y_h2[i]) * self.Vp[i] * self._pv_mult(P[i])
+            for i in range(self.N)
         )
         m_max = m_initial
         m_min = m_initial
@@ -560,6 +575,7 @@ class UHSRadial1D:
             for _ in range(n_steps):
                 P_new, T_new, q_well, BHP = self._solve_pressure(P, T, ctrl, dt_act)
                 max_picard_res = max(max_picard_res, self._last_picard_residual_Pa)
+                cum_boundary += self._last_boundary_q * dt_act
                 t += dt_act
 
                 if q_well >= 0.0:
@@ -571,7 +587,8 @@ class UHSRadial1D:
                 T = T_new
 
                 m_now = sum(
-                    self._cell_density(P[i], T[i], self.y_h2[i]) * self.Vp[i] for i in range(self.N)
+                    self._cell_density(P[i], T[i], self.y_h2[i]) * self.Vp[i] * self._pv_mult(P[i])
+                    for i in range(self.N)
                 )
                 m_max = max(m_max, m_now)
                 m_min = min(m_min, m_now)
@@ -605,15 +622,19 @@ class UHSRadial1D:
                     )
                     snap_idx += 1
 
-        total_Vp = sum(self.Vp)
+        total_Vp = sum(self.Vp[i] * self._pv_mult(P[i]) for i in range(self.N))
         m_final = result.mass_kg[-1] if result.mass_kg else m_initial
         net = cum_inj - cum_wdr
-        mb_err = abs((m_final - m_initial) - net) / max(abs(net), 1.0)
+        # Influx through a constant-pressure outer boundary is a real source term.
+        mb_err = abs((m_final - m_initial) - net - cum_boundary) / max(
+            abs(net) + abs(cum_boundary), 1.0
+        )
         result.metrics = {
             "total_injected_kg": cum_inj,
             "total_withdrawn_kg": cum_wdr,
             "net_stored_kg": net,
             "cycled_gas_kg": cum_inj + cum_wdr,
+            "boundary_influx_kg": cum_boundary,
             "initial_mass_kg": m_initial,
             "final_mass_kg": m_final,
             "mass_balance_error": mb_err,
