@@ -10,6 +10,8 @@ implicit upwind advection–dispersion scheme in advective form (as in
 
 from __future__ import annotations
 
+from typing import Any
+
 from h2multisim.thermo import (
     GAS_COMPONENTS,
     M_H2,
@@ -19,7 +21,7 @@ from h2multisim.thermo import (
 )
 
 
-def validate_cushion_props(props: object, where: str) -> None:
+def validate_cushion_props(props: Any, where: str) -> None:
     """Normalise ``props.cushion_gas`` and check ``initial_h2_mole_fraction``."""
     cg = str(props.cushion_gas).strip().upper()
     if cg not in GAS_COMPONENTS:
@@ -34,6 +36,9 @@ def validate_cushion_props(props: object, where: str) -> None:
 
 class BinaryCompositionMixin:
     """Composition-aware cell properties; requires ``self.eos`` and ``self.props``."""
+
+    props: Any  # provided by the host model
+    eos: Any
 
     def _init_composition(self) -> None:
         props = self.props

@@ -642,7 +642,9 @@ class IsothermModel:
     def _K2(self, T: float) -> float:
         return self.K0_2 * math.exp(-self.dH2 / R_UNIVERSAL * (1.0 / T - 1.0 / self.T_ref))
 
-    def adsorbed_moles_per_kg(self, P: float, T: float, eos: PengRobinsonH2 | None = None) -> float:
+    def adsorbed_moles_per_kg(
+        self, P: float, T: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None
+    ) -> float:
         """Return adsorbed hydrogen [mol H2 / kg sorbent]."""
         if self.model == "none":
             return 0.0

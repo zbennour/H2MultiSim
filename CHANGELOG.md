@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Packaging & tooling (AUDIT.md §4.10)
+- Ships `py.typed` (PEP 561) with the `Typing :: Typed` classifier; the package type-checks cleanly with `mypy --check-untyped-defs`, now run in the CI lint job. Fixed the 11 issues mypy found (mixin attribute declarations, the `IsothermModel` EOS type, a CLI variable re-typed mid-function).
+- `.pre-commit-config.yaml` (ruff, ruff-format, mypy) and `SECURITY.md` (private vulnerability reporting).
+
 ## v1.9.0 — 2026-10-31
 
 ### 0D adaptive time stepping (AUDIT.md §4.9)
