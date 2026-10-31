@@ -5,7 +5,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 71/71 Passed](https://img.shields.io/badge/tests-71%2F71%20passed-brightgreen.svg)](tests/)
+[![Tests: 74/74 Passed](https://img.shields.io/badge/tests-74%2F74%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
@@ -181,7 +181,7 @@ H2MultiSim/
 │   └── bench_analytical_1d.py  # Al-Hussainy real-gas pseudopressure radial line-source benchmark
 ├── src/
 │   └── h2multisim/
-│       ├── __init__.py         # Public API and package version (1.5.0)
+│       ├── __init__.py         # Public API and package version (1.6.0)
 │       ├── __main__.py         # Module execution entrypoint
 │       ├── cli.py              # Unified CLI (run, export-deck, test)
 │       ├── config.py           # JSON/YAML run configuration loader

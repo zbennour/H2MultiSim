@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6.0 — 2026-10-31
+
+### Energy metrics (AUDIT.md §4.10)
+- Every tier now reports stored and cycled energy in GWh (HHV and LHV): `total_injected_energy_GWh_*`, `total_withdrawn_energy_GWh_*`, `working_gas_energy_GWh_*`, and in 0D/1D `withdrawn_to_injected_energy_pct`.
+- Energy uses the actual stream composition: injected gas at the injected-stream heating value, produced gas at the produced composition (0D: including plume segregation; 1D: the well-block composition). Cushion-gas dilution is therefore reflected in the withdrawn energy. Working gas is valued at the injected-stream heating value (design-capacity basis).
+- New `heating_values_mass(composition)` (J/kg; pure H2 LHV 119.95 MJ/kg = 33.32 kWh/kg) and `J_to_GWh` / `GWh_to_J` unit helpers. The CLI prints working-gas and withdrawn energy.
+
 ## v1.5.0 — 2026-10-31
 
 ### Performance (AUDIT.md §4.9)

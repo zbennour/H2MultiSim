@@ -25,11 +25,13 @@ from h2multisim.thermo import (
     _real_heat_capacities,
     coupled_temperature_update,
     enthalpy_molar,
+    heating_values_mass,
     internal_energy_molar,
     normalize_composition,
     viscosity_h2,
 )
 from h2multisim.units import (
+    J_to_GWh,
     K_to_C,
     K_to_F,
     bar_to_pa,
@@ -254,6 +256,7 @@ class UHSReservoir0D:
 
         self.isotherm = props.isotherm or IsothermModel(model="none")
         self._last_step_converged: bool = True
+        self._last_prod_comp: dict[str, float] | None = None  # produced-stream mole fractions
 
         # Thermal model.  The energy balance does not carry the adsorbed phase's
         # energy or heat of adsorption, so sorbent stores keep the lumped model.
@@ -513,6 +516,7 @@ class UHSReservoir0D:
             else:
                 w_prod = w_old
             comp_info = (y_old, comp_m_old, w_inj, w_prod)
+            self._last_prod_comp = PengRobinsonMixture.mole_fractions_from_mass(w_prod)
         else:
             m_old = self.mass_from_state(P_old, T_old)
             self._store_old_energy_state(P_old, T_old)
@@ -619,6 +623,9 @@ class UHSReservoir0D:
         inj_kg = 0.0
         wdr_kg = 0.0
         unconverged_steps = 0
+        hhv_inj, lhv_inj = heating_values_mass(self._inj_comp)
+        e_inj = [0.0, 0.0]  # J (HHV, LHV) injected
+        e_wdr = [0.0, 0.0]  # J (HHV, LHV) withdrawn
 
         y_cur = y0
         y_h2_init = y_cur.get("H2", 1.0)
@@ -638,6 +645,8 @@ class UHSReservoir0D:
             n_steps = max(round(period.duration_days * 86400.0 / dt_s), 1)
             dt_act = period.duration_days * 86400.0 / n_steps
             for _ in range(n_steps):
+                self._last_prod_comp = None
+                y_before = normalize_composition(state.composition or self._init_comp)
                 new_state, q = self.step(state, period, dt_act)
                 if not self._last_step_converged:
                     unconverged_steps += 1
@@ -645,8 +654,13 @@ class UHSReservoir0D:
 
                 if q >= 0.0:
                     inj_kg += q * dt_act
+                    e_inj[0] += q * dt_act * hhv_inj
+                    e_inj[1] += q * dt_act * lhv_inj
                 else:
                     wdr_kg -= q * dt_act
+                    hhv_p, lhv_p = heating_values_mass(self._last_prod_comp or y_before)
+                    e_wdr[0] -= q * dt_act * hhv_p
+                    e_wdr[1] -= q * dt_act * lhv_p
 
                 P_max = max(P_max, new_state.pressure)
                 P_min = min(P_min, new_state.pressure)
@@ -692,6 +706,16 @@ class UHSReservoir0D:
             "total_withdrawn_kg": wdr_kg,
             "net_stored_kg": net_kg,
             "cycled_gas_kg": inj_kg + wdr_kg,
+            "total_injected_energy_GWh_HHV": J_to_GWh(e_inj[0]),
+            "total_injected_energy_GWh_LHV": J_to_GWh(e_inj[1]),
+            "total_withdrawn_energy_GWh_HHV": J_to_GWh(e_wdr[0]),
+            "total_withdrawn_energy_GWh_LHV": J_to_GWh(e_wdr[1]),
+            # Working gas valued at the injected-stream heating value (design capacity basis).
+            "working_gas_energy_GWh_LHV": J_to_GWh(wg * lhv_inj),
+            "working_gas_energy_GWh_HHV": J_to_GWh(wg * hhv_inj),
+            "withdrawn_to_injected_energy_pct": (
+                100.0 * e_wdr[1] / e_inj[1] if e_inj[1] > 0.0 else 0.0
+            ),
             "cycle_balance_kg": net_kg,
             "mass_balance_error": mb_err,
             "unconverged_steps": float(unconverged_steps),

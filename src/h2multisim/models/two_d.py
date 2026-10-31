@@ -17,10 +17,12 @@ from h2multisim.thermo import (
     PengRobinsonH2,
     RelativePermeabilityModel,
     coupled_temperature_update,
+    heating_values_mass,
     isentropic_exponent,
     viscosity_h2,
 )
 from h2multisim.units import (
+    J_to_GWh,
     K_to_C,
     bar_to_pa,
     kg_to_tonnes,
@@ -657,6 +659,7 @@ class UHSAreal2D:
         m_min = min(result.mass_t) if result.mass_t else 0.0
         m_final_kg = result.mass_t[-1] * 1000.0 if result.mass_t else m_initial
         net_kg = cum_inj - cum_wdr
+        hhv_h2, lhv_h2 = heating_values_mass()
         mb_err = abs((m_final_kg - m_initial) - net_kg) / max(abs(net_kg), 1.0)
         result.metrics = {
             "max_P_bar": pa_to_bar(P_max),
@@ -674,6 +677,11 @@ class UHSAreal2D:
             "total_withdrawn_t": kg_to_tonnes(cum_wdr),
             "net_stored_t": kg_to_tonnes(net_kg),
             "cycled_gas_t": kg_to_tonnes(cum_inj + cum_wdr),
+            # Single-gas (pure H2) tier: energy = mass × H2 heating value.
+            "total_injected_energy_GWh_LHV": J_to_GWh(cum_inj * lhv_h2),
+            "total_withdrawn_energy_GWh_LHV": J_to_GWh(cum_wdr * lhv_h2),
+            "working_gas_energy_GWh_LHV": J_to_GWh((m_max - m_min) * 1000.0 * lhv_h2),
+            "working_gas_energy_GWh_HHV": J_to_GWh((m_max - m_min) * 1000.0 * hhv_h2),
             "mass_balance_error": mb_err,
             "max_picard_residual_Pa": max_picard_res,
             "sor_unconverged_solves": float(self._sor_failures),

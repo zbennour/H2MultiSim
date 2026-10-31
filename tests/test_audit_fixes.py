@@ -166,6 +166,54 @@ class TestEnergyBalance(unittest.TestCase):
             )
 
 
+class TestEnergyMetrics(unittest.TestCase):
+    def test_heating_values(self) -> None:
+        from h2multisim.thermo import heating_values_mass
+
+        hhv, lhv = heating_values_mass()
+        self.assertAlmostEqual(lhv / 3.6e6, 33.32, places=2)  # kWh/kg
+        self.assertAlmostEqual(hhv / 1e6, 141.8, places=1)  # MJ/kg
+        # Inert N2 dilutes the mass-specific heating value.
+        self.assertLess(heating_values_mass({"H2": 0.8, "N2": 0.2})[1], 0.3 * lhv)
+
+    def test_0d_energy_metrics_consistent_with_mass(self) -> None:
+        props = build_okoroafor_reservoir()
+        model = UHSReservoir0D(props)
+        P0, T0 = props.reference_pressure, props.reference_temperature
+        sched = [
+            SchedulePeriod("inj", "inject", 20.0, bar_to_pa(100.0), 35.0),
+            SchedulePeriod("wdr", "withdraw", 20.0, bar_to_pa(70.0), 35.0),
+        ]
+        m = model.run_schedule(
+            ReservoirState(P0, T0, model.mass_from_state(P0, T0)), sched, 86400.0
+        ).metrics
+        from h2multisim.thermo import heating_values_mass
+
+        lhv = heating_values_mass()[1] / 3.6e12  # GWh per kg (pure H2)
+        self.assertAlmostEqual(
+            m["total_withdrawn_energy_GWh_LHV"], m["total_withdrawn_kg"] * lhv, delta=1e-3
+        )
+        self.assertAlmostEqual(
+            m["working_gas_energy_GWh_LHV"], m["working_gas_kg"] * lhv, delta=1e-3
+        )
+
+    def test_0d_withdrawn_energy_reflects_cushion_dilution(self) -> None:
+        props = build_okoroafor_reservoir()
+        props.cushion_gas = "N2"
+        props.initial_composition = {"H2": 0.3, "N2": 0.7}
+        model = UHSReservoir0D(props)
+        P0, T0 = props.reference_pressure, props.reference_temperature
+        st = ReservoirState(
+            P0, T0, model.mass_from_state(P0, T0), composition={"H2": 0.3, "N2": 0.7}
+        )
+        sched = [SchedulePeriod("wdr", "withdraw", 10.0, bar_to_pa(60.0), 35.0)]
+        m = model.run_schedule(st, sched, 86400.0).metrics
+        lhv_h2 = 33.32e-6  # GWh/kg, pure H2 LHV
+        # Produced gas is mostly N2 by mass: energy far below mass × H2 LHV.
+        self.assertGreater(m["total_withdrawn_kg"], 0.0)
+        self.assertLess(m["total_withdrawn_energy_GWh_LHV"], 0.1 * m["total_withdrawn_kg"] * lhv_h2)
+
+
 class TestModeValidation(unittest.TestCase):
     def test_unknown_modes_rejected(self) -> None:
         with self.assertRaises(ValueError):

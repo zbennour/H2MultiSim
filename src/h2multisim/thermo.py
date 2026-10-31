@@ -811,6 +811,18 @@ def normalize_composition(comp: dict[str, float] | None) -> dict[str, float]:
     return {k: v / total for k, v in cleaned.items()}
 
 
+def heating_values_mass(composition: dict[str, float] | None = None) -> tuple[float, float]:
+    """
+    Gravimetric (HHV, LHV) [J/kg] of a gas stream with the given mole fractions
+    (default pure H2: 141.8 / 120.0 MJ/kg).  Inert CO2/N2 add mass but no energy.
+    """
+    comp = normalize_composition(composition)
+    mass = sum(y * GAS_COMPONENTS[sp].molar_mass for sp, y in comp.items())
+    hhv = sum(y * GAS_COMPONENTS[sp].hhv_molar for sp, y in comp.items()) / mass
+    lhv = sum(y * GAS_COMPONENTS[sp].lhv_molar for sp, y in comp.items()) / mass
+    return float(hhv), float(lhv)
+
+
 class PengRobinsonMixture:
     """
     Multicomponent Peng-Robinson Equation of State for subsurface gas mixtures
