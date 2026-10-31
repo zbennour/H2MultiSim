@@ -5,7 +5,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 86/86 Passed](https://img.shields.io/badge/tests-86%2F86%20passed-brightgreen.svg)](tests/)
+[![Tests: 90/90 Passed](https://img.shields.io/badge/tests-90%2F90%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
@@ -21,7 +21,7 @@ H2MultiSim™ is an open-source, dependency-free Python toolkit designed for res
 ### 1. Robust Real-Gas Thermodynamics (`h2multisim.thermo`)
 - **Closed-Form Analytical PR-EOS & Peneloux Volume Translation**: Solves the cubic Peng-Robinson equation of state using the Cardano/Viète trigonometric method, guaranteeing the physical vapor root in a single pass without iterative Newton-Raphson divergence. Optional Peneloux volume translation ($c = -4.0 \times 10^{-6}\text{ m}^3/\text{mol}$) keeps the $Z$-factor error within $1.0\%$ across $1\text{–}350\text{ bar}$ at $280\text{–}450\text{ K}$ ($\le 1.25\%$ at $250\text{–}280\text{ K}$).
 - **Dynamic Viscosity**: Chapman-Enskog dilute-gas formulation with a density-dependent residual fitted to Muzny et al. (2013) / CoolProp ($\mu = s_0\mu_0(T) + c_1\rho + c_2\rho^2$), matching CoolProp 8.0.0 within $0.5\%$ across $250\text{–}450\text{ K}$ and $1\text{–}350\text{ bar}$.
-- **Thermal Model**: 0D tier solves a real-gas control-volume energy balance (Peng-Robinson enthalpy/internal energy, injected-gas enthalpy at `injection_temperature`, wall heat transfer via the relaxation time τ), matching CoolProp adiabatic cavern fill/discharge within 0.5–2 %. The 1D/2D/3D tiers use a per-cell real-gas isentropic update with exponential relaxation toward geothermal temperature (`thermal_model="lumped"` selects this in 0D).
+- **Thermal Model**: 0D tier solves a real-gas control-volume energy balance (Peng-Robinson enthalpy/internal energy, injected-gas enthalpy at `injection_temperature`, wall heat transfer via the relaxation time τ), matching CoolProp adiabatic cavern fill/discharge within 0.5–2 %. In porous media the rock and connate water (`rock_heat_capacity`, default 2.2 MJ/m³K) share the compression work in local thermal equilibrium, so porous reservoirs stay within ~1 K of geothermal while caverns swing by tens of kelvin. The 1D/2D/3D tiers use a per-cell real-gas isentropic update with the same rock dilution and exponential relaxation toward geothermal temperature (`thermal_model="lumped"` selects this in 0D).
 - **Joule–Thomson**: Analytical real-gas throttling coefficient $\mu_{\text{JT}} = (\partial T/\partial P)_H$ with Peneloux covolume correction, reproducing negative $\mu_{\text{JT}}$ warming across the UHS operating envelope ($\sim 4.5\%$ vs CoolProp at $293.15\text{ K}, 100\text{ bar}$).
 - **Adsorption & Compressibility**: Dual-Site Langmuir (DSL) isotherms and rigid/elastic/breathing-MOF pore-volume models.
 
@@ -182,7 +182,7 @@ H2MultiSim/
 │   └── bench_analytical_1d.py  # Al-Hussainy real-gas pseudopressure radial line-source benchmark
 ├── src/
 │   └── h2multisim/
-│       ├── __init__.py         # Public API and package version (1.9.0)
+│       ├── __init__.py         # Public API and package version (1.10.0)
 │       ├── __main__.py         # Module execution entrypoint
 │       ├── cli.py              # Unified CLI (run, export-deck, test)
 │       ├── config.py           # JSON/YAML run configuration loader

@@ -411,6 +411,49 @@ class TestAdaptiveStepping0D(unittest.TestCase):
         self.assertLessEqual(max(dT), 5.0 + 1e-6)
 
 
+class TestRockHeatCapacity(unittest.TestCase):
+    def _run0d(self, builder, rock):
+        props = builder()
+        props.rock_heat_capacity = rock
+        model = UHSReservoir0D(props)
+        P0, T0 = props.reference_pressure, props.reference_temperature
+        sched = [
+            SchedulePeriod("inj", "inject", 30.0, P0 * 1.3, 35.0),
+            SchedulePeriod("wdr", "withdraw", 30.0, P0 * 0.8, 35.0),
+        ]
+        res = model.run_schedule(
+            ReservoirState(P0, T0, model.mass_from_state(P0, T0)), sched, 86400.0
+        )
+        return max(res.temperatures) - min(res.temperatures)
+
+    def test_porous_reservoir_near_isothermal_with_rock(self) -> None:
+        swing_rock = self._run0d(build_okoroafor_reservoir, None)
+        swing_gas_only = self._run0d(build_okoroafor_reservoir, 0.0)
+        self.assertLess(swing_rock, 2.0)  # rock absorbs the compression work
+        self.assertGreater(swing_gas_only, 10.0)  # previous gas-only behaviour
+
+    def test_cavern_unaffected(self) -> None:
+        self.assertAlmostEqual(
+            self._run0d(build_teesside_cavern, None),
+            self._run0d(build_teesside_cavern, 5.0e6),
+            places=9,
+        )
+
+    def test_gas_heat_capacity_fraction(self) -> None:
+        from h2multisim.thermo import gas_heat_capacity_fraction
+
+        f = gas_heat_capacity_fraction(8.0, 14500.0, 0.2, 1.0, 2.2e6)
+        self.assertAlmostEqual(
+            f, 0.2 * 8.0 * 14500.0 / (0.2 * 8.0 * 14500.0 + 0.8 * 2.2e6), places=12
+        )
+        self.assertEqual(gas_heat_capacity_fraction(8.0, 14500.0, 1.0, 1.0, 2.2e6), 1.0)
+
+    def test_2d_porous_temperature_swing_small(self) -> None:
+        props, wells, sched = scenario_single_well(nx=5, ny=5)
+        m = UHSAreal2D(props, wells).run_schedule(sched, dt_days=2.0).metrics
+        self.assertLess(m["max_T_C"] - m["min_T_C"], 1.0)
+
+
 class TestModeValidation(unittest.TestCase):
     def test_unknown_modes_rejected(self) -> None:
         with self.assertRaises(ValueError):

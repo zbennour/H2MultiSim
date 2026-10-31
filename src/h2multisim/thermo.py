@@ -548,6 +548,36 @@ def thermal_relaxation_update(
     return float(T_geothermal + (T_current - T_geothermal) * math.exp(-dt_s / max(tau_s, 1.0)))
 
 
+ROCK_HEAT_CAPACITY_DEFAULT: float = 2.2e6  # J/(m³·K) of rock solids (sandstone ρc)
+WATER_HEAT_CAPACITY: float = 4.18e6  # J/(m³·K) liquid water / brine
+
+
+def gas_heat_capacity_fraction(
+    rho_gas: float,
+    cp_gas_mass: float,
+    porosity: float,
+    gas_saturation: float,
+    rock_heat_capacity: float,
+) -> float:
+    """
+    Share of the local (gas + connate water + rock) heat capacity carried by the gas,
+    assuming local thermal equilibrium between pore gas and grains:
+
+        f = φ·S_g·ρ_g·c_p / (φ·S_g·ρ_g·c_p + φ·(1 − S_g)·ρc_w + (1 − φ)·ρc_rock)
+
+    Compression work done on the gas is shared with water and rock in this ratio,
+    so the isentropic gas temperature change is reduced by ``f`` (≈ 0.01 for a
+    typical sandstone at 100 bar).
+    """
+    c_gas = porosity * gas_saturation * rho_gas * cp_gas_mass
+    c_other = (
+        porosity * (1.0 - gas_saturation) * WATER_HEAT_CAPACITY
+        + (1.0 - porosity) * rock_heat_capacity
+    )
+    total = c_gas + c_other
+    return c_gas / total if total > 0.0 else 1.0
+
+
 def coupled_temperature_update(
     T_old: float,
     P_old: float,
