@@ -188,6 +188,9 @@ def _props_0d(d: dict[str, Any]) -> ReservoirProperties:
         sgc=float(d.get("sgc", 0.0)),
         rel_perm=rel_perm,
         thermal_model=str(d.get("thermal_model", "energy_balance")),
+        supply_pressure=_pa(d.get("supply_pressure", 30.0e5)),
+        compressor_efficiency=float(d.get("compressor_efficiency", 0.75)),
+        compressor_max_stage_ratio=float(d.get("compressor_max_stage_ratio", 3.0)),
         rock_heat_capacity=(
             float(d["rock_heat_capacity"]) if d.get("rock_heat_capacity") is not None else None
         ),

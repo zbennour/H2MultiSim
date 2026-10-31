@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.11.0 — 2026-10-31
+
+### Compression energy (AUDIT.md §4.10)
+- New `entropy_molar` (Shomate ideal-gas entropy + Peng-Robinson residual) and `isentropic_outlet_temperature` (solves S(T, P_out) = S(T_in, P_in)). Outlet temperatures are within ~1 K of CoolProp; the earlier one-point exponent was 1–2.4 % off in work.
+- New `compression_work_mass(P_in, P_out, T_in, eos, efficiency, max_stage_ratio)`: equal-ratio stages with intercooling. Isentropic work matches CoolProp within 0.3–1 % per stage.
+- 0D: `compression_energy_GWh` and `compression_energy_pct_of_injected_LHV`. Injected gas is compressed from `supply_pressure` (default 30 bar) to the injection bottom-hole pressure, with `compressor_efficiency` (default 0.75) and `compressor_max_stage_ratio` (default 3). Teesside cycling costs ~1.5 % of injected LHV and the Okoroafor reservoir ~2.1 %. The CLI prints it and configs accept the keys.
+
 ## v1.10.0 — 2026-10-31
 
 ### Rock heat capacity in porous media (thermal physics fix)
