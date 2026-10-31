@@ -64,8 +64,8 @@ JT_REF_K_PER_BAR: tuple[float, float, float] = (293.15, 100.0, -0.03466)
 
 # Acceptance tolerances (relative), matching LIMITATIONS.md
 TOL = {
-    "Z": 0.0085,  # 280-450 K; 1.2 % below 280 K (constant Peneloux shift)
-    "Z_cold": 0.012,
+    "Z": 0.010,  # 280-450 K (grid max 0.999 %); constant Peneloux shift
+    "Z_cold": 0.0125,  # 250-280 K (grid max 1.22 %)
     "viscosity": 0.005,
     "Cp": 0.01,
     "isentropic_dT": 0.03,

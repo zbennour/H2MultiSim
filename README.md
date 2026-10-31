@@ -19,7 +19,7 @@ H2MultiSim™ is an open-source, dependency-free Python toolkit designed for res
 ## Key Technical Features
 
 ### 1. Robust Real-Gas Thermodynamics (`h2multisim.thermo`)
-- **Closed-Form Analytical PR-EOS & Peneloux Volume Translation**: Solves the cubic Peng-Robinson equation of state using the Cardano/Viète trigonometric method, guaranteeing the physical vapor root in a single pass without iterative Newton-Raphson divergence. Optional Peneloux volume translation ($c = -4.0 \times 10^{-6}\text{ m}^3/\text{mol}$) reduces $Z$-factor error below $0.85\%$ across $1\text{–}350\text{ bar}$ at $280\text{–}450\text{ K}$ ($\le 1.2\%$ at $250\text{ K}$).
+- **Closed-Form Analytical PR-EOS & Peneloux Volume Translation**: Solves the cubic Peng-Robinson equation of state using the Cardano/Viète trigonometric method, guaranteeing the physical vapor root in a single pass without iterative Newton-Raphson divergence. Optional Peneloux volume translation ($c = -4.0 \times 10^{-6}\text{ m}^3/\text{mol}$) keeps the $Z$-factor error within $1.0\%$ across $1\text{–}350\text{ bar}$ at $280\text{–}450\text{ K}$ ($\le 1.25\%$ at $250\text{–}280\text{ K}$).
 - **Dynamic Viscosity**: Chapman-Enskog dilute-gas formulation with a density-dependent residual fitted to Muzny et al. (2013) / CoolProp ($\mu = s_0\mu_0(T) + c_1\rho + c_2\rho^2$), matching CoolProp 8.0.0 within $0.5\%$ across $250\text{–}450\text{ K}$ and $1\text{–}350\text{ bar}$.
 - **Thermal Model**: 0D tier solves a real-gas control-volume energy balance (Peng-Robinson enthalpy/internal energy, injected-gas enthalpy at `injection_temperature`, wall heat transfer via the relaxation time τ), matching CoolProp adiabatic cavern fill/discharge within 0.5–2 %. The 1D/2D/3D tiers use a per-cell real-gas isentropic update with exponential relaxation toward geothermal temperature (`thermal_model="lumped"` selects this in 0D).
 - **Joule–Thomson**: Analytical real-gas throttling coefficient $\mu_{\text{JT}} = (\partial T/\partial P)_H$ with Peneloux covolume correction, reproducing negative $\mu_{\text{JT}}$ warming across the UHS operating envelope ($\sim 4.5\%$ vs CoolProp at $293.15\text{ K}, 100\text{ bar}$).
@@ -64,8 +64,8 @@ transfer or regulatory reporting.
 | **Thomas Solver**| $N=6$ Poisson system | Analytical solution | Residual $< 10^{-10}$ | Exact |
 
 The uncorrected Peng–Robinson Z-factor error reaches ~4.2% at 250 bar. Enabling Peneloux volume
-translation ($c=-4.0\times10^{-6}\ \mathrm{m^3/mol}$) reduces the maximum Z error to below 0.85% across
-1–350 bar at 280–450 K (1.2 % at 250 K) and is supported across all models and JSON/YAML configs via `peneloux=True` or
+translation ($c=-4.0\times10^{-6}\ \mathrm{m^3/mol}$) keeps the maximum Z error within 1.0 % across
+1–350 bar at 280–450 K (1.25 % at 250–280 K) and is supported across all models and JSON/YAML configs via `peneloux=True` or
 `volume_translation=-4.0e-6` (see `AUDIT.md`, finding F-04). Dynamic viscosity uses a dense-fluid
 residual fitted to Muzny et al. (2013) / CoolProp, within 0.5 % across 250–450 K and 1–350 bar.
 `h2multisim verify` re-checks all of these figures against embedded CoolProp reference values.
