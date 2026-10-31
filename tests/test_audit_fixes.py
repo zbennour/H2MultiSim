@@ -78,6 +78,22 @@ class TestRealGasThermo(unittest.TestCase):
         jt = joule_thomson_coefficient(293.15, 100e5) * 1e5
         self.assertLess(abs(jt / -0.0347 - 1.0), 0.10)
 
+    def test_cushion_gas_species_vs_coolprop(self) -> None:
+        # CoolProp 8.0.0 at 320 K: (species, P [bar]) -> (density [kg/m³], viscosity [µPa·s])
+        refs = {
+            ("CH4", 100.0): (67.61, 14.13),
+            ("CH4", 200.0): (138.23, 18.31),
+            ("N2", 100.0): (103.65, 20.66),
+            ("N2", 200.0): (197.00, 23.51),
+            ("CO2", 100.0): (448.28, 31.76),
+            ("CO2", 200.0): (802.33, 72.48),
+        }
+        for (sp, Pb), (rho_ref, mu_ref) in refs.items():
+            with self.subTest(species=sp, P=Pb):
+                eos = PengRobinsonMixture({sp: 1.0}, peneloux=True)
+                self.assertLess(abs(eos.density(Pb * 1e5, 320.0) / rho_ref - 1.0), 0.04)
+                self.assertLess(abs(eos.viscosity(Pb * 1e5, 320.0) / (mu_ref * 1e-6) - 1.0), 0.02)
+
     def test_brooks_corey_capillary_round_trip(self) -> None:
         rp = RelativePermeabilityModel(
             model="brooks_corey", swr=0.25, sgc=0.05, brooks_corey_lambda=2.0, entry_pressure_Pa=8e3
@@ -173,11 +189,32 @@ class TestDeckExport(unittest.TestCase):
         self.assertEqual(items[5], "2*")
         self.assertAlmostEqual(float(items[6]), 55.0, places=2)
         self.assertGreater(float(items[4]), 1.0e5)  # 35 kg/s in sm³/day
-        # COMPDAT carries the skin factor (item 11)
+        # COMPDAT: explicit CF (item 8) with the solver's equivalent radius, skin (item 11)
         comp = text.split("COMPDAT\n", 1)[1].splitlines()[0].split()
-        # 'W1' I J K1 K2 'OPEN' 2* DIAM 1* SKIN /
-        self.assertEqual(comp[8], "1*")
-        self.assertAlmostEqual(float(comp[9]), props.skin, places=3)
+        # 'W1' I J K1 K2 'OPEN' 1* CF DIAM 1* SKIN /
+        self.assertGreater(float(comp[7]), 0.0)
+        self.assertEqual(comp[9], "1*")
+        self.assertAlmostEqual(float(comp[10]), props.skin, places=3)
+
+    def test_1d_deck_reproduces_radial_grid(self) -> None:
+        import math
+
+        props, sched = okoroafor_radial()
+        model = UHSRadial1D(props, N=10)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "r.DATA")
+            export_eclipse_1d_radial(props, sched, path, N=10)
+            text = self._read(path)
+        porv = [float(v) for v in text.split("PORV\n", 1)[1].split("/", 1)[0].split()]
+        tranx = [float(v) for v in text.split("TRANX\n", 1)[1].split("/", 1)[0].split()]
+        self.assertEqual(len(porv), 10)
+        for v_deck, v_solver in zip(porv, model.Vp):
+            self.assertAlmostEqual(v_deck / v_solver, 1.0, places=5)
+        # TRANX [cP·rm³/day/bar] = 2π·0.008527·k[mD]·h / ln(r_c,i+1 / r_c,i); last link closed
+        k_mD = props.k / 9.869233e-16
+        t_ref = 2.0 * math.pi * 0.008527 * k_mD * props.h / math.log(model.r_c[1] / model.r_c[0])
+        self.assertAlmostEqual(tranx[0] / t_ref, 1.0, places=4)
+        self.assertEqual(tranx[-1], 0.0)
 
     def test_3d_layers_and_perforations_flipped_to_deck_order(self) -> None:
         props, wells, sched = scenario_gravity_override()
@@ -202,15 +239,25 @@ class TestDeckExport(unittest.TestCase):
         self.assertAlmostEqual(values[-1], 15.0, places=2)  # bottom layer written last
         self.assertEqual(permx, permz)  # isotropic, like the 3D solver
 
-    def test_poro_includes_immobile_water(self) -> None:
+    def test_gas_water_deck_with_connate_water(self) -> None:
         props, wells, sched = scenario_single_well(nx=4, ny=4)
         props.swr = 0.25
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "s.DATA")
             export_eclipse_2d(props, wells, sched, path)
             text = self._read(path)
+        # OPM Flow has no single-phase gas mode: WATER + GAS with immobile water.
+        self.assertIn("\nWATER\nGAS\n", text)
         poro = float(text.split("PORO\n", 1)[1].splitlines()[0].split("*")[1].split()[0])
-        self.assertAlmostEqual(poro, props.phi * 0.75, places=4)
+        self.assertAlmostEqual(poro, props.phi, places=4)
+        swat = float(text.split("SWAT\n", 1)[1].splitlines()[0].split("*")[1].split()[0])
+        self.assertAlmostEqual(swat, 0.25, places=6)
+        # SGWFN: last row is S_g = 1 - S_wr with k_rw = 0 (connate water immobile)
+        rows = text.split("SGWFN\n", 1)[1].split("/", 1)[0].strip().splitlines()[1:]
+        sg_last, krg_last, krw_last, _ = (float(x) for x in rows[-1].split())
+        self.assertAlmostEqual(sg_last, 0.75, places=6)
+        self.assertAlmostEqual(krw_last, 0.0, places=9)
+        self.assertGreater(krg_last, 0.0)
 
 
 class TestConfigUnits(unittest.TestCase):

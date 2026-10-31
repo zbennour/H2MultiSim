@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.2 — 2026-10-31
+
+### Tier 3: decks now run in OPM Flow, with measured agreement
+- Exported decks are **gas–water** (`WATER`/`GAS`, `TABDIMS`, `PVTW`, `SGWFN` from the solver's relative-permeability model, `SWAT`/`SGAS`). Previous gas-only decks were rejected by OPM Flow ("No suitable configuration found"), so Tier 3 had never actually run.
+- The 1D radial deck is written as an exact `PORV`/`TRANX` strip with an explicit connection factor; OPM's `RADIAL` grid never connected the well.
+- Decks include a `SUMMARY` section.
+- New `audit/bench_opm.py` runs every canonical 1D/2D/3D scenario in OPM Flow and H2MultiSim. Isothermal agreement: ≤ 1.2 % in stored-gas change and ≤ 0.05 % in average pressure (see BENCHMARKS.md §4).
+
+### Cushion-gas properties
+- Refitted CH4/CO2/N2 Peneloux shifts (minimax density error) and dense-fluid viscosity residuals against CoolProp 8.0.0 (300–370 K, 20–250 bar). Max density error: CH4 3.3 → 1.2 %, CO2 8.2 → 4.2 %, N2 0.4 → 0.2 %. Max viscosity error: CH4 3.5 → 1.0 %, CO2 62 → 3.2 %, N2 15 → 2.1 %. The mixture viscosity cap was raised from 80 to 200 µPa·s for dense CO2.
+
+### Repository
+- Moved the standalone `h2_*.py` scripts and `key_improvements_in_v1.3.txt` to `legacy/` with a README (as recommended in AUDIT.md §4.10).
+
 ## v1.3.1 — 2026-10-31
 
 Fixes from the multi-lens audit of v1.3.0.
