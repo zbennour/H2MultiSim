@@ -369,6 +369,37 @@ class TestConfigUnits(unittest.TestCase):
             _pa("100 atm")
 
 
+class TestPCGSolver(unittest.TestCase):
+    def test_pcg_solves_small_spd_system(self) -> None:
+        from h2multisim.models._common import pcg_solve
+
+        # 1D Laplacian with a positive diagonal shift: [3 -1 0; -1 3 -1; 0 -1 3] x = b
+        diag = [3.0, 3.0, 3.0]
+        nbrs = [[(1, 1.0)], [(0, 1.0), (2, 1.0)], [(1, 1.0)]]
+        x_true = [1.0, 2.0, 3.0]
+        b = [3.0 * 1.0 - 2.0, 3.0 * 2.0 - 1.0 - 3.0, 3.0 * 3.0 - 2.0]
+        x, ok = pcg_solve(diag, nbrs, b, [0.0, 0.0, 0.0], tol=1e-12, max_iter=50)
+        self.assertTrue(ok)
+        for xi, ti in zip(x, x_true):
+            self.assertAlmostEqual(xi, ti, places=10)
+
+    def test_pcg_matches_sor_in_3d_with_gravity(self) -> None:
+        results = []
+        for solver in ("pcg", "sor"):
+            props, wells, sched = scenario_gravity_override(nx=3, ny=3, nz=4)
+            res = UHSFieldScale3D(props, wells, linear_solver=solver).run_schedule(
+                sched[:1], dt_days=5.0
+            )
+            results.append((res.P_avg_bar[-1], res.mass_t[-1]))
+        self.assertAlmostEqual(results[0][0], results[1][0], places=6)
+        self.assertAlmostEqual(results[0][1], results[1][1], delta=1e-3)
+
+    def test_unknown_linear_solver_rejected(self) -> None:
+        props, wells, _ = scenario_single_well(nx=3, ny=3)
+        with self.assertRaises(ValueError):
+            UHSAreal2D(props, wells, linear_solver="gmres")
+
+
 class TestConvergenceFlags(unittest.TestCase):
     def test_3d_reports_solver_health(self) -> None:
         props, wells, sched = scenario_gravity_override(nx=3, ny=3, nz=3)
