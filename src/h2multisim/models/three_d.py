@@ -12,6 +12,7 @@ import math
 import os
 from dataclasses import dataclass, field
 
+from h2multisim.models._common import validate_mode
 from h2multisim.thermo import (
     PengRobinsonH2,
     RelativePermeabilityModel,
@@ -41,7 +42,7 @@ class Reservoir3DProps:
     Lz: float  # m thickness in z
     phi: float  # porosity
     k: float  # background permeability [m²]
-    Ct: float  # Pa⁻¹ total compressibility
+    Ct: float  # Pa⁻¹ pore (rock) compressibility; gas compressibility comes from the EOS
     P_init: float  # Pa initial pressure
     T_init: float  # K initial temperature
     nx: int
@@ -92,6 +93,11 @@ class Schedule3D:
     bhp_target: float  # Pa
     q_max: float  # kg/s total rate limit
     well_modes: dict[str, str] | None = None  # optional per-well override
+
+    def __post_init__(self) -> None:
+        validate_mode(self.mode, f"schedule period {self.name!r}")
+        for well_name, mode in (self.well_modes or {}).items():
+            validate_mode(mode, f"schedule period {self.name!r}, well {well_name!r}")
 
     def mode_for(self, well_name: str) -> str:
         """Operating mode for a named well (falls back to the period mode)."""
@@ -167,6 +173,8 @@ class UHSFieldScale3D:
         self.tau_s = props.tau_days * 86400.0
         self.g = G_GRAV
         self._last_picard_residual_Pa: float = 0.0
+        self._sor_failures: int = 0  # inner SOR solves that hit max_iter
+        self._active_set_failures: int = 0  # steps whose well active set did not settle
 
         self.nx = props.nx
         self.ny = props.ny
@@ -212,6 +220,10 @@ class UHSFieldScale3D:
         else:
             self._kz = [props.k * self._krg_eff] * props.nz
 
+    def _pv_mult(self, P: float) -> float:
+        """Pore-volume multiplier exp(Ct·(P − P_init)) for rock (pore) compressibility Ct."""
+        return math.exp(self.props.Ct * (P - self.props.P_init))
+
     def _k_cell(self, i: int, j: int, k: int) -> float:
         return self._kz[k]
 
@@ -236,8 +248,8 @@ class UHSFieldScale3D:
         kh = self._k_harm_x(i, j, k)
         rhoL = self.eos.density(P[i][j][k], T[i][j][k])
         rhoR = self.eos.density(P[i + 1][j][k], T[i + 1][j][k])
-        muL = viscosity_h2(T[i][j][k], P[i][j][k], rho=rhoL)
-        muR = viscosity_h2(T[i + 1][j][k], P[i + 1][j][k], rho=rhoR)
+        muL = viscosity_h2(T[i][j][k], P[i][j][k], rho=rhoL, eos=self.eos)
+        muR = viscosity_h2(T[i + 1][j][k], P[i + 1][j][k], rho=rhoR, eos=self.eos)
         rho_h = 2.0 * rhoL * rhoR / (rhoL + rhoR + 1e-30)
         mu_h = 2.0 * muL * muR / (muL + muR + 1e-30)
         return kh * self.dy * self.dz * rho_h / (mu_h * self.dx)
@@ -248,8 +260,8 @@ class UHSFieldScale3D:
         kh = self._k_harm_y(i, j, k)
         rhoB = self.eos.density(P[i][j][k], T[i][j][k])
         rhoT = self.eos.density(P[i][j + 1][k], T[i][j + 1][k])
-        muB = viscosity_h2(T[i][j][k], P[i][j][k], rho=rhoB)
-        muT = viscosity_h2(T[i][j + 1][k], P[i][j + 1][k], rho=rhoT)
+        muB = viscosity_h2(T[i][j][k], P[i][j][k], rho=rhoB, eos=self.eos)
+        muT = viscosity_h2(T[i][j + 1][k], P[i][j + 1][k], rho=rhoT, eos=self.eos)
         rho_h = 2.0 * rhoB * rhoT / (rhoB + rhoT + 1e-30)
         mu_h = 2.0 * muB * muT / (muB + muT + 1e-30)
         return kh * self.dx * self.dz * rho_h / (mu_h * self.dy)
@@ -260,8 +272,8 @@ class UHSFieldScale3D:
         kh = self._k_harm_z(i, j, k)
         rhoD = self.eos.density(P[i][j][k], T[i][j][k])
         rhoU = self.eos.density(P[i][j][k + 1], T[i][j][k + 1])
-        muD = viscosity_h2(T[i][j][k], P[i][j][k], rho=rhoD)
-        muU = viscosity_h2(T[i][j][k + 1], P[i][j][k + 1], rho=rhoU)
+        muD = viscosity_h2(T[i][j][k], P[i][j][k], rho=rhoD, eos=self.eos)
+        muU = viscosity_h2(T[i][j][k + 1], P[i][j][k + 1], rho=rhoU, eos=self.eos)
         rho_h = 2.0 * rhoD * rhoU / (rhoD + rhoU + 1e-30)
         mu_h = 2.0 * muD * muU / (muD + muU + 1e-30)
         return kh * self.dx * self.dy * rho_h / (mu_h * self.dz)
@@ -269,12 +281,13 @@ class UHSFieldScale3D:
     def _well_index(
         self, w: WellSpec3D, P: list[list[list[float]]], T: list[list[list[float]]], k: int
     ) -> float:
-        r_eq = 0.28 * math.sqrt(self.dx * self.dy)
+        # Peaceman (1978) isotropic equivalent radius: 0.14·√(Δx² + Δy²) (≈ 0.198·Δx).
+        r_eq = 0.14 * math.sqrt(self.dx**2 + self.dy**2)
         ln_r = math.log(max(r_eq, w.r_w * 1.001) / w.r_w)
         ln_r = max(ln_r, 0.1)
         k_w = self._k_cell(w.i, w.j, k)
         rho = self.eos.density(P[w.i][w.j][k], T[w.i][w.j][k])
-        mu = viscosity_h2(T[w.i][w.j][k], P[w.i][w.j][k], rho=rho)
+        mu = viscosity_h2(T[w.i][w.j][k], P[w.i][w.j][k], rho=rho, eos=self.eos)
         return 2.0 * math.pi * k_w * self.dz * rho / (mu * ln_r)
 
     def _gravity_dp(
@@ -372,15 +385,29 @@ class UHSFieldScale3D:
                 for i in range(nx)
             ]
 
+            vp_k = [
+                [[self.Vp * self._pv_mult(Pk[i][j][k]) for k in range(nz)] for j in range(ny)]
+                for i in range(nx)
+            ]
             B = [
-                [[self.Vp * drho[i][j][k] / dt for k in range(nz)] for j in range(ny)]
+                [
+                    [
+                        vp_k[i][j][k] * (drho[i][j][k] + rho_k[i][j][k] * self.props.Ct) / dt
+                        for k in range(nz)
+                    ]
+                    for j in range(ny)
+                ]
                 for i in range(nx)
             ]
             rhs0 = [
                 [
                     [
                         B[i][j][k] * Pk[i][j][k]
-                        - self.Vp * (rho_k[i][j][k] - rho_old[i][j][k]) / dt
+                        - (
+                            vp_k[i][j][k] * rho_k[i][j][k]
+                            - self.Vp * self._pv_mult(P_old[i][j][k]) * rho_old[i][j][k]
+                        )
+                        / dt
                         for k in range(nz)
                     ]
                     for j in range(ny)
@@ -452,6 +479,8 @@ class UHSFieldScale3D:
 
                 if max_change < self.tol_Pa:
                     break
+            else:
+                self._sor_failures += 1
 
             change = max(
                 abs(P_new[i][j][k] - Pk[i][j][k])
@@ -630,6 +659,8 @@ class UHSFieldScale3D:
 
             if not changed:
                 break
+        else:
+            self._active_set_failures += 1
 
         return P_new, T_new, per_well
 
@@ -677,6 +708,8 @@ class UHSFieldScale3D:
         verbose: bool = False,
     ) -> Result3D:
         nx, ny, nz = self.nx, self.ny, self.nz
+        self._sor_failures = 0
+        self._active_set_failures = 0
         P = [[[self.props.P_init] * nz for _ in range(ny)] for _ in range(nx)]
         P = self._hydrostatic_init(P, nx, ny, nz)
         T = [[[self.props.T_init] * nz for _ in range(ny)] for _ in range(nx)]
@@ -710,7 +743,7 @@ class UHSFieldScale3D:
 
         def _total_mass() -> float:
             return sum(
-                self.eos.density(P[i][j][k], T[i][j][k]) * self.Vp
+                self.eos.density(P[i][j][k], T[i][j][k]) * self.Vp * self._pv_mult(P[i][j][k])
                 for i in range(nx)
                 for j in range(ny)
                 for k in range(nz)
@@ -804,7 +837,15 @@ class UHSFieldScale3D:
             "cycled_gas_t": kg_to_tonnes(cum_inj + cum_wdr),
             "mass_balance_error": mb_err,
             "max_picard_residual_Pa": max_picard_res,
-            "converged": 1.0 if max_picard_res < self.picard_tol_Pa else 0.0,
+            "sor_unconverged_solves": float(self._sor_failures),
+            "active_set_unconverged_steps": float(self._active_set_failures),
+            "converged": (
+                1.0
+                if max_picard_res < self.picard_tol_Pa
+                and self._sor_failures == 0
+                and self._active_set_failures == 0
+                else 0.0
+            ),
         }
         return result
 

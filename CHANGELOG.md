@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.3.1 — 2026-10-31
+
+Fixes from the multi-lens audit of v1.3.0.
+
+### Thermodynamics
+- Fixed the sign of the Peng-Robinson residual heat capacity and added the exact $C_p - C_v$ term (`cp_real_h2`, `gamma_real_h2`). Real-gas $C_p$ now rises with pressure and matches CoolProp within 0.3 % (was −3.6 % at 300 bar); $\gamma$ error fell from +3.6 % to ≤ 2 %.
+- `adiabatic_temperature` now uses the real-gas isentropic exponent $n = R(Z + T\,\partial Z/\partial T)/C_p$ instead of the ideal-gas $(\gamma-1)/\gamma$; isentropic $\Delta T$ error fell from 4–7 % to ≤ 1.6 % vs CoolProp.
+- `joule_thomson_coefficient` no longer replaces a mixture EOS with pure H2 (the 80/20 H2/CH4 sign was wrong). The pure-H2 path's effective JT translation ($-8\times10^{-6}$ m³/mol) is now an explicit, documented empirical constant.
+- Brooks-Corey `gas_saturation_from_capillary_pressure` honours `sgc`, so it inverts `capillary_pressure_Pa` exactly.
+
+### Solvers
+- 1D/2D/3D solvers now apply pore (rock) compressibility `Ct` ($V_p = V_{p0}e^{C_t(P-P_{init})}$), consistent with the 0D tier and the exported `ROCK` keyword. `Ct` was previously ignored.
+- 2D/3D well index uses the Peaceman equivalent radius $0.14\sqrt{\Delta x^2+\Delta y^2}$ (was $0.28\sqrt{\Delta x\Delta y}$, ~6 % low productivity on the default grid).
+- Well modes are validated (`inject`, `withdraw`, `shut_in`); a typo such as `"injection"` previously made a 1D well flow backwards.
+- `run_monte_carlo` passes `swr`, `sgc` and `rel_perm` to each realisation (immobile water was ignored, overstating gas in place by 43 % at `swr = 0.3`).
+- 1D mass balance includes constant-pressure outer-boundary influx (`boundary_influx_kg`); 1D temperature updates use the local mixture composition.
+- 2D/3D viscosity uses the solver's EOS; new `sor_unconverged_solves` and `active_set_unconverged_steps` metrics feed `converged`.
+- 0D reports `converged` / `unconverged_steps` from the root bracket; its inventory-based `mass_balance_error` is documented as a bookkeeping identity.
+
+### Deck export
+- `WCONPROD` writes the rate cap to GRAT (it was written to the THP item, so producer caps were lost).
+- 3D decks write layers and perforations top-down (layered permeability and the gravity-override bottom perforations were flipped) and use isotropic `PERMZ` like the solver.
+- `PORO`/`PERM*` include immobile-water factors; 1D `COMPDAT` carries the skin factor; deck headers document the remaining isothermal difference.
+
+### Config & CLI
+- Pressure strings accept `bar`, `bara`, `MPa`, `kPa`, `Pa`, `psi`, `psia`.
+- 0D config pore-model `V0` defaults to the gas-accessible pore volume (honours `swr`).
+- `--out-dir` and `--dt-days` override a config file's values instead of being silently replaced.
+
+### Tests
+- Added `tests/test_audit_fixes.py` (16 regression tests against CoolProp references and ECLIPSE item order); re-captured the 2D golden values.
+
 ## v1.2.0 — 2026-10-30
 
 ### Benchmarks & Verification

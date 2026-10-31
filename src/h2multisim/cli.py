@@ -427,7 +427,10 @@ def main() -> None:
         "--n-mc", type=int, default=100, help="Number of Monte Carlo realizations"
     )
     run_parser.add_argument(
-        "--out-dir", type=str, default="output", help="Directory for exported CSV time series"
+        "--out-dir",
+        type=str,
+        default=None,
+        help="Directory for exported CSV time series (default: output, or the config's out_dir)",
     )
     run_parser.add_argument(
         "--config", type=str, default=None, help="Path to a JSON/YAML run configuration file"
@@ -491,8 +494,11 @@ def main() -> None:
             args._props = props
             args._wells = wells
             args._schedule = sched
-            args.out_dir = out_dir
-            args.dt_days = dt_days
+            # Explicit command-line flags take precedence over the config file.
+            if args.out_dir is None:
+                args.out_dir = out_dir
+            if args.dt_days is None:
+                args.dt_days = dt_days
             if scale == "0d":
                 sys.exit(_run_0d(args))
             elif scale == "1d":

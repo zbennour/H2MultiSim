@@ -12,6 +12,7 @@ import math
 import os
 from dataclasses import dataclass, field
 
+from h2multisim.models._common import validate_mode
 from h2multisim.thermo import (
     PengRobinsonH2,
     RelativePermeabilityModel,
@@ -39,7 +40,7 @@ class Reservoir2DProps:
     h: float  # m net pay thickness
     phi: float  # fraction porosity
     k: float  # m² background permeability
-    Ct: float  # Pa⁻¹ total compressibility
+    Ct: float  # Pa⁻¹ pore (rock) compressibility; gas compressibility comes from the EOS
     P_init: float  # Pa initial reservoir pressure
     T_init: float  # K initial / geothermal temperature
     nx: int  # grid cells in x
@@ -85,6 +86,11 @@ class Schedule2D:
     bhp_target: float  # Pa
     q_max: float  # kg/s per well limit
     well_modes: dict[str, str] | None = None  # optional per-well override
+
+    def __post_init__(self) -> None:
+        validate_mode(self.mode, f"schedule period {self.name!r}")
+        for well_name, mode in (self.well_modes or {}).items():
+            validate_mode(mode, f"schedule period {self.name!r}, well {well_name!r}")
 
     def mode_for(self, well_name: str) -> str:
         """Operating mode for a named well (falls back to the period mode)."""
@@ -156,6 +162,8 @@ class UHSAreal2D:
         self.picard_tol_Pa = picard_tol_Pa
         self.tau_s = props.tau_days * 86400.0
         self._last_picard_residual_Pa: float = 0.0
+        self._sor_failures: int = 0  # inner SOR solves that hit max_iter
+        self._active_set_failures: int = 0  # steps whose well active set did not settle
 
         self.nx = props.nx
         self.ny = props.ny
@@ -193,6 +201,10 @@ class UHSAreal2D:
         else:
             self.k = [[props.k * self._krg_eff] * props.ny for _ in range(props.nx)]
 
+    def _pv_mult(self, P: float) -> float:
+        """Pore-volume multiplier exp(Ct·(P − P_init)) for rock (pore) compressibility Ct."""
+        return math.exp(self.props.Ct * (P - self.props.P_init))
+
     def _k_harm_x(self, i: int, j: int) -> float:
         kL = self.k[i][j]
         kR = self.k[i + 1][j]
@@ -211,8 +223,8 @@ class UHSAreal2D:
         kh = self._k_harm_x(i, j)
         rhoL = self.eos.density(P[i][j], T[i][j])
         rhoR = self.eos.density(P[i + 1][j], T[i + 1][j])
-        muL = viscosity_h2(T[i][j], P[i][j], rho=rhoL)
-        muR = viscosity_h2(T[i + 1][j], P[i + 1][j], rho=rhoR)
+        muL = viscosity_h2(T[i][j], P[i][j], rho=rhoL, eos=self.eos)
+        muR = viscosity_h2(T[i + 1][j], P[i + 1][j], rho=rhoR, eos=self.eos)
         rho_h = 2.0 * rhoL * rhoR / (rhoL + rhoR + 1e-30)
         mu_h = 2.0 * muL * muR / (muL + muR + 1e-30)
         return kh * self.props.h * self.dy * rho_h / (mu_h * self.dx)
@@ -221,19 +233,20 @@ class UHSAreal2D:
         kh = self._k_harm_y(i, j)
         rhoB = self.eos.density(P[i][j], T[i][j])
         rhoT = self.eos.density(P[i][j + 1], T[i][j + 1])
-        muB = viscosity_h2(T[i][j], P[i][j], rho=rhoB)
-        muT = viscosity_h2(T[i][j + 1], P[i][j + 1], rho=rhoT)
+        muB = viscosity_h2(T[i][j], P[i][j], rho=rhoB, eos=self.eos)
+        muT = viscosity_h2(T[i][j + 1], P[i][j + 1], rho=rhoT, eos=self.eos)
         rho_h = 2.0 * rhoB * rhoT / (rhoB + rhoT + 1e-30)
         mu_h = 2.0 * muB * muT / (muB + muT + 1e-30)
         return kh * self.props.h * self.dx * rho_h / (mu_h * self.dy)
 
     def _well_index(self, w: WellSpec2D, P: list[list[float]], T: list[list[float]]) -> float:
-        r_eq = 0.28 * math.sqrt(self.dx * self.dy)
+        # Peaceman (1978) isotropic equivalent radius: 0.14·√(Δx² + Δy²) (≈ 0.198·Δx).
+        r_eq = 0.14 * math.sqrt(self.dx**2 + self.dy**2)
         ln_r = math.log(max(r_eq, w.r_w * 1.001) / w.r_w)
         ln_r = max(ln_r, 0.1)
         k_w = self.k[w.i][w.j]
         rho = self.eos.density(P[w.i][w.j], T[w.i][w.j])
-        mu = viscosity_h2(T[w.i][w.j], P[w.i][w.j], rho=rho)
+        mu = viscosity_h2(T[w.i][w.j], P[w.i][w.j], rho=rho, eos=self.eos)
         return 2.0 * math.pi * k_w * self.props.h * rho / (mu * ln_r)
 
     def _assemble_well_contributions_2d(self, ctrl, Pk, Tk, rate_q, shut_wells, nx, ny):
@@ -291,10 +304,19 @@ class UHSAreal2D:
             rho_k = [[self.eos.density(Pk[i][j], Tk[i][j]) for j in range(ny)] for i in range(nx)]
             drho = [[self.eos.drho_dP(Pk[i][j], Tk[i][j]) for j in range(ny)] for i in range(nx)]
 
-            B = [[self.Vp * drho[i][j] / dt for j in range(ny)] for i in range(nx)]
+            vp_k = [[self.Vp * self._pv_mult(Pk[i][j]) for j in range(ny)] for i in range(nx)]
+            B = [
+                [vp_k[i][j] * (drho[i][j] + rho_k[i][j] * self.props.Ct) / dt for j in range(ny)]
+                for i in range(nx)
+            ]
             rhs0 = [
                 [
-                    B[i][j] * Pk[i][j] - self.Vp * (rho_k[i][j] - rho_old[i][j]) / dt
+                    B[i][j] * Pk[i][j]
+                    - (
+                        vp_k[i][j] * rho_k[i][j]
+                        - self.Vp * self._pv_mult(P_old[i][j]) * rho_old[i][j]
+                    )
+                    / dt
                     for j in range(ny)
                 ]
                 for i in range(nx)
@@ -336,6 +358,8 @@ class UHSAreal2D:
 
                 if max_change < self.tol_Pa:
                     break
+            else:
+                self._sor_failures += 1
 
             change = max(abs(P_new[i][j] - Pk[i][j]) for i in range(nx) for j in range(ny))
             self._last_picard_residual_Pa = change
@@ -463,6 +487,8 @@ class UHSAreal2D:
 
             if not changed:
                 break
+        else:
+            self._active_set_failures += 1
 
         return P_new, T_new, per_well
 
@@ -474,6 +500,8 @@ class UHSAreal2D:
     ) -> Result2D:
         nx, ny = self.nx, self.ny
 
+        self._sor_failures = 0
+        self._active_set_failures = 0
         P = [[self.props.P_init] * ny for _ in range(nx)]
         T = [[self.props.T_init] * ny for _ in range(nx)]
 
@@ -530,7 +558,7 @@ class UHSAreal2D:
                 T_min = min(T_min, min(T_flat))
 
                 m_tot = sum(
-                    self.eos.density(P[i][j], T[i][j]) * self.Vp
+                    self.eos.density(P[i][j], T[i][j]) * self.Vp * self._pv_mult(P[i][j])
                     for i in range(nx)
                     for j in range(ny)
                 )
@@ -576,7 +604,15 @@ class UHSAreal2D:
             "cycled_gas_t": kg_to_tonnes(cum_inj + cum_wdr),
             "mass_balance_error": mb_err,
             "max_picard_residual_Pa": max_picard_res,
-            "converged": 1.0 if max_picard_res < self.picard_tol_Pa else 0.0,
+            "sor_unconverged_solves": float(self._sor_failures),
+            "active_set_unconverged_steps": float(self._active_set_failures),
+            "converged": (
+                1.0
+                if max_picard_res < self.picard_tol_Pa
+                and self._sor_failures == 0
+                and self._active_set_failures == 0
+                else 0.0
+            ),
         }
         return result
 

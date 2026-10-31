@@ -36,7 +36,7 @@ from h2multisim.thermo import (
     PoreVolumeModel,
     RelativePermeabilityModel,
 )
-from h2multisim.units import bar_to_pa, mD_to_m2
+from h2multisim.units import mD_to_m2
 
 
 def _load_raw(path: str | os.PathLike) -> dict[str, Any]:
@@ -57,14 +57,24 @@ def _load_raw(path: str | os.PathLike) -> dict[str, Any]:
     return data
 
 
+_PRESSURE_UNITS: tuple[tuple[str, float], ...] = (
+    ("bara", 1.0e5),
+    ("bar", 1.0e5),
+    ("mpa", 1.0e6),
+    ("kpa", 1.0e3),
+    ("psia", 6894.757293168),
+    ("psi", 6894.757293168),
+    ("pa", 1.0),
+)
+
+
 def _pa(v: Any) -> float:
     if isinstance(v, str):
         s = v.strip().lower()
-        if s.endswith("bar"):
-            return bar_to_pa(float(s[:-3].strip()))
-        if s.endswith("pa"):
-            return float(s[:-2].strip())
-        raise ValueError(f"cannot parse pressure: {v!r}")
+        for suffix, factor in _PRESSURE_UNITS:
+            if s.endswith(suffix):
+                return float(s[: -len(suffix)].strip()) * factor
+        raise ValueError(f"cannot parse pressure: {v!r} (units: bar, MPa, kPa, Pa, psi)")
     return float(v)
 
 
@@ -106,13 +116,21 @@ def _props_0d(d: dict[str, Any]) -> ReservoirProperties:
     porosity = float(d["porosity"])
     ct = float(d["total_compressibility"])
     p_ref = _pa(d["reference_pressure"])
+    rel_perm = _rel_perm(d)
+    # Default pore-model volume is the gas-accessible pore volume, matching
+    # UHSReservoir0D when no pore model is given.
+    sat_factor = (
+        rel_perm
+        or RelativePermeabilityModel(swr=float(d.get("swr", 0.0)), sgc=float(d.get("sgc", 0.0)))
+    ).effective_porosity_factor()
+    v0_default = area * thickness * porosity * sat_factor
 
     pm_raw = d.get("pore_model")
     pore_model: PoreVolumeModel | None = None
     if isinstance(pm_raw, dict):
         pore_model = PoreVolumeModel(
             model=str(pm_raw.get("model", "elastic")),
-            V0=float(pm_raw.get("V0", area * thickness * porosity)),
+            V0=float(pm_raw.get("V0", v0_default)),
             P0=_pa(pm_raw.get("P0", p_ref)),
             total_compressibility=float(pm_raw.get("total_compressibility", ct)),
             P_gate=_pa(pm_raw.get("P_gate", 5e6)),
@@ -122,7 +140,7 @@ def _props_0d(d: dict[str, Any]) -> ReservoirProperties:
     elif isinstance(pm_raw, str):
         pore_model = PoreVolumeModel(
             model=pm_raw,
-            V0=area * thickness * porosity,
+            V0=v0_default,
             P0=p_ref,
             total_compressibility=ct,
         )
@@ -168,7 +186,7 @@ def _props_0d(d: dict[str, Any]) -> ReservoirProperties:
         plume_segregation=float(d.get("plume_segregation", 0.0)),
         swr=float(d.get("swr", 0.0)),
         sgc=float(d.get("sgc", 0.0)),
-        rel_perm=_rel_perm(d),
+        rel_perm=rel_perm,
     )
 
 

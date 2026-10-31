@@ -1399,7 +1399,8 @@ class TestH2MultiSimValidation(unittest.TestCase):
         pc_mid = rp_bc.capillary_pressure_Pa(0.45)
         self.assertGreater(pc_mid, 8.0e3)
         sg_inv = rp_bc.gas_saturation_from_capillary_pressure(pc_mid)
-        self.assertAlmostEqual(sg_inv, (1.0 - 0.25) * (0.45 - 0.05) / (0.75 - 0.05), places=6)
+        # Forward and inverse Brooks-Corey share the S_gc-shifted normalisation (round trip).
+        self.assertAlmostEqual(sg_inv, 0.45, places=6)
 
         # Buckley-Leverett / Welge tangent front for H2 displacing brine
         sg_front, v_front = rp_corey.buckley_leverett_front(mu_g=9.0e-6, mu_w=8.0e-4)
