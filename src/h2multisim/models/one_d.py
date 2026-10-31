@@ -602,7 +602,7 @@ class UHSRadial1D:
         m_max = m_initial
         m_min = m_initial
         max_picard_res = 0.0
-        min_wdr_y_h2 = self._y_init
+        min_wdr_y_h2 = math.inf  # minimum over withdrawal steps only
 
         for ctrl in schedule:
             n_steps = max(round(ctrl.duration_d / dt_days), 1)
@@ -700,7 +700,10 @@ class UHSRadial1D:
                 result.well_h2_mole_fraction[-1] if result.well_h2_mole_fraction else self._y_init
             )
             * 100.0,
-            "min_withdrawn_h2_purity_mol_pct": min_wdr_y_h2 * 100.0,
+            "min_withdrawn_h2_purity_mol_pct": (
+                min_wdr_y_h2 if math.isfinite(min_wdr_y_h2) else self._y_init
+            )
+            * 100.0,
             "final_well_wobbe_index_MJ_sm3": (
                 result.well_wobbe_index[-1]
                 if result.well_wobbe_index

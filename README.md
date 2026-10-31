@@ -5,13 +5,13 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 74/74 Passed](https://img.shields.io/badge/tests-74%2F74%20passed-brightgreen.svg)](tests/)
+[![Tests: 78/78 Passed](https://img.shields.io/badge/tests-78%2F78%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
 - **0D Tier**: Lumped material balance with an exact mass-state step, active BHP/rate control, and Monte Carlo uncertainty quantification (UQ) with log-normal permeability and truncated-normal porosity, thickness, area and temperature.
 - **1D Tier**: Radial finite-volume model on logarithmic grids with implicit Thomas algorithm solving near-wellbore transient drawdowns and buildups.
-- **2D Tier**: Areal Cartesian grid with implicit finite volumes, a Jacobi-preconditioned conjugate-gradient pressure solver (`linear_solver="sor"` selects Gauss-Seidel SOR), Picard iteration, and multi-well interference/permeability channeling.
+- **2D Tier**: Areal Cartesian grid with implicit finite volumes, a Jacobi-preconditioned conjugate-gradient pressure solver (`linear_solver="sor"` selects Gauss-Seidel SOR), Picard iteration, multi-well interference/permeability channeling, and optional binary H2 + cushion-gas (CH4/CO2/N2) mixing.
 - **3D Tier**: Field-scale Cartesian grid with the same PCG pressure solver (red-black SOR optional), layer stratigraphy, and buoyant gravity segregation ($+\rho_{\text{harm}} g \Delta z$).
 
 ---

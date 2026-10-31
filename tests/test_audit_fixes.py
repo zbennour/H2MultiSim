@@ -214,6 +214,79 @@ class TestEnergyMetrics(unittest.TestCase):
         self.assertLess(m["total_withdrawn_energy_GWh_LHV"], 0.1 * m["total_withdrawn_kg"] * lhv_h2)
 
 
+class TestCushionGas2D(unittest.TestCase):
+    def _run(self):
+        props, wells, sched = scenario_single_well(nx=7, ny=7)
+        props.cushion_gas = "N2"
+        props.initial_h2_mole_fraction = 0.0
+        sim = UHSAreal2D(props, wells)
+        res = sim.run_schedule(sched, dt_days=2.0, snap_days=[30.0])
+        return props, wells, sim, res
+
+    def test_mass_conserved_and_converged(self) -> None:
+        _, _, _, res = self._run()
+        self.assertEqual(res.metrics["converged"], 1.0)
+        self.assertLess(res.metrics["mass_balance_error"], 1e-6)
+
+    def test_h2_species_conserved(self) -> None:
+        from h2multisim.thermo import GAS_COMPONENTS, M_H2
+
+        props, wells, sched = scenario_single_well(nx=7, ny=7)
+        props.cushion_gas = "N2"
+        props.initial_h2_mole_fraction = 0.0
+        sim = UHSAreal2D(props, wells)
+        res = sim.run_schedule(sched, dt_days=2.0, snap_days=[70.0])
+        m_cg = GAS_COMPONENTS["N2"].molar_mass
+
+        def w_h2(y: float) -> float:
+            return y * M_H2 / (y * M_H2 + (1.0 - y) * m_cg)
+
+        # Net H2 through the well: injected pure H2 minus H2 produced at the well-cell composition.
+        dt = 2.0 * 86400.0
+        h2_net = sum(
+            q * dt if q > 0.0 else q * dt * w_h2(y)
+            for q, y in zip(res.per_well_q["W1"], res.per_well_h2_mole_fraction["W1"])
+        )
+        snap = res.snapshots[-1]
+        h2_in_place = sum(
+            sim._rho(P, T, y) * sim.Vp * sim._pv_mult(P) * w_h2(y)
+            for P, T, y in zip(snap.P_Pa, snap.T_K, snap.h2_mole_fraction)
+        )
+        self.assertGreater(h2_net, 0.0)
+        self.assertLess(abs(h2_in_place - h2_net) / h2_net, 1e-4)
+
+    def test_plume_symmetric_and_purity_reported(self) -> None:
+        _, wells, _, res = self._run()
+        snap = res.snapshots[0]
+        ny = 7
+        row = [snap.h2_mole_fraction[3 * ny + j] for j in range(ny)]
+        self.assertGreater(row[3], 0.5)  # injector cell is H2-rich
+        self.assertAlmostEqual(row[2], row[4], places=6)  # symmetric plume
+        self.assertLess(row[0], 0.05)  # far field still cushion gas
+        m = res.metrics
+        self.assertGreater(m["min_withdrawn_h2_purity_mol_pct"], 0.0)
+        self.assertLess(m["min_withdrawn_h2_purity_mol_pct"], 100.0)
+        # Produced energy reflects N2 dilution: below withdrawn mass × H2 LHV.
+        self.assertLess(
+            m["total_withdrawn_energy_GWh_LHV"], m["total_withdrawn_t"] * 1000.0 * 33.32e-6
+        )
+
+    def test_single_gas_path_unchanged_and_deck_warning(self) -> None:
+        props, wells, sched = scenario_single_well(nx=4, ny=4)
+        self.assertFalse(UHSAreal2D(props, wells)._is_multicomponent)
+        props.cushion_gas = "CH4"
+        props.initial_h2_mole_fraction = 0.2
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.DATA")
+            export_eclipse_2d(props, wells, sched, path)
+            with open(path, encoding="utf-8") as fh:
+                self.assertIn("WARNING: H2MultiSim models a CH4 cushion gas", fh.read())
+        with self.assertRaises(ValueError):
+            scenario_single_well(nx=4, ny=4)[0].__class__(
+                **{**scenario_single_well(nx=4, ny=4)[0].__dict__, "cushion_gas": "He"}
+            )
+
+
 class TestModeValidation(unittest.TestCase):
     def test_unknown_modes_rejected(self) -> None:
         with self.assertRaises(ValueError):

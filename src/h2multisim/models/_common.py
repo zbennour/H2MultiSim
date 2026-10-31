@@ -93,3 +93,68 @@ def pcg_solve(
         rz = rz_new
         p = [z[i] + beta * p[i] for i in range(n)]
     return x, False
+
+
+class AndersonAccelerator:
+    """
+    Anderson acceleration (type II, depth ``m``) for a fixed-point map x = g(x)
+    on flat float lists.  ``step(x, gx)`` returns the next iterate.  Used to
+    speed up the linearly convergent pressure–composition Picard coupling.
+    """
+
+    def __init__(self, m: int = 3) -> None:
+        self.m = m
+        self._dg: list[list[float]] = []  # differences of g(x)
+        self._df: list[list[float]] = []  # differences of residual f = g(x) - x
+        self._prev: tuple[list[float], list[float]] | None = None
+
+    def step(self, x: list[float], gx: list[float]) -> list[float]:
+        f = [g - xi for g, xi in zip(gx, x)]
+        if self._prev is not None:
+            g_prev, f_prev = self._prev
+            self._dg.append([a - b for a, b in zip(gx, g_prev)])
+            self._df.append([a - b for a, b in zip(f, f_prev)])
+            if len(self._df) > self.m:
+                self._dg.pop(0)
+                self._df.pop(0)
+        self._prev = (gx, f)
+        k = len(self._df)
+        if k == 0:
+            return list(gx)
+        # Least squares min ||f − ΔF·γ|| via the k×k normal equations (k <= m, small).
+        A = [
+            [sum(a * b for a, b in zip(self._df[r], self._df[c])) for c in range(k)]
+            for r in range(k)
+        ]
+        rhs = [sum(a * b for a, b in zip(self._df[r], f)) for r in range(k)]
+        for r in range(k):
+            A[r][r] *= 1.0 + 1e-10
+        gamma = _solve_small(A, rhs)
+        if gamma is None:
+            return list(gx)
+        out = list(gx)
+        for c in range(k):
+            gc = gamma[c]
+            dgc = self._dg[c]
+            for i in range(len(out)):
+                out[i] -= gc * dgc[i]
+        return out
+
+
+def _solve_small(A: list[list[float]], b: list[float]) -> list[float] | None:
+    """Gaussian elimination with partial pivoting for a small dense system."""
+    n = len(b)
+    M = [row[:] + [b[i]] for i, row in enumerate(A)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(M[r][col]))
+        if abs(M[piv][col]) < 1e-300:
+            return None
+        M[col], M[piv] = M[piv], M[col]
+        for r in range(col + 1, n):
+            fac = M[r][col] / M[col][col]
+            for c in range(col, n + 1):
+                M[r][c] -= fac * M[col][c]
+    x = [0.0] * n
+    for r in range(n - 1, -1, -1):
+        x[r] = (M[r][n] - sum(M[r][c] * x[c] for c in range(r + 1, n))) / M[r][r]
+    return x

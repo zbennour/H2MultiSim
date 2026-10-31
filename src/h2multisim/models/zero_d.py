@@ -629,7 +629,7 @@ class UHSReservoir0D:
 
         y_cur = y0
         y_h2_init = y_cur.get("H2", 1.0)
-        min_wdr_h2 = y_h2_init
+        min_wdr_h2 = math.inf  # minimum over withdrawal steps only
 
         if collect_time_series:
             result.times.append(t)
@@ -690,7 +690,7 @@ class UHSReservoir0D:
         # construction.  Solver health is reported by ``converged``.
         mb_err = abs((state.mass - m0) - net_kg) / max(abs(net_kg), 1.0)
         y_final = normalize_composition(state.composition or self._init_comp)
-        if wdr_kg <= 0.0:
+        if not math.isfinite(min_wdr_h2):
             min_wdr_h2 = y_final.get("H2", 1.0)
 
         result.metrics = {

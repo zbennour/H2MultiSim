@@ -254,6 +254,14 @@ def _props_2d(d: dict[str, Any]) -> Reservoir2DProps:
         swr=float(d.get("swr", 0.0)),
         sgc=float(d.get("sgc", 0.0)),
         rel_perm=_rel_perm(d),
+        cushion_gas=str(d.get("cushion_gas", "H2")),
+        initial_h2_mole_fraction=(
+            float(d["initial_h2_mole_fraction"])
+            if d.get("initial_h2_mole_fraction") is not None
+            else None
+        ),
+        dispersivity_m=float(d.get("dispersivity_m", 0.5)),
+        molecular_diffusivity_m2_s=float(d.get("molecular_diffusivity_m2_s", 1.0e-5)),
     )
 
 
