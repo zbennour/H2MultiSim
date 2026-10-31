@@ -101,7 +101,13 @@ def _run_0d(args: argparse.Namespace) -> int:
     )
 
     dt_s = (args.dt_days or 1.0) * 86400.0
-    result = model.run_schedule(s0, sched, dt_s=dt_s, collect_time_series=True)
+    result = model.run_schedule(
+        s0,
+        sched,
+        dt_s=dt_s,
+        collect_time_series=True,
+        adaptive=not getattr(args, "fixed_dt", False),
+    )
     m = result.metrics
     args._metrics = dict(m)
     args._scenario = scenario
@@ -503,6 +509,11 @@ def main() -> None:
     )
     run_parser.add_argument(
         "--quiet", action="store_true", help="Suppress the human-readable report"
+    )
+    run_parser.add_argument(
+        "--fixed-dt",
+        action="store_true",
+        help="0D: disable adaptive sub-stepping (faster, less accurate for fast cavern cycles)",
     )
 
     # verify command
