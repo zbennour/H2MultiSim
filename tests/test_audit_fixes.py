@@ -42,7 +42,7 @@ from h2multisim.thermo import (
     joule_thomson_coefficient,
     viscosity_h2,
 )
-from h2multisim.units import bar_to_pa
+from h2multisim.units import bar_to_pa, mD_to_m2
 
 
 class TestRealGasThermo(unittest.TestCase):
@@ -285,6 +285,61 @@ class TestCushionGas2D(unittest.TestCase):
             scenario_single_well(nx=4, ny=4)[0].__class__(
                 **{**scenario_single_well(nx=4, ny=4)[0].__dict__, "cushion_gas": "He"}
             )
+
+
+class TestCushionGas3D(unittest.TestCase):
+    def test_conservation_and_convergence(self) -> None:
+        from h2multisim.thermo import GAS_COMPONENTS, M_H2, heating_values_mass
+
+        props, wells, sched = scenario_gravity_override(nx=3, ny=3, nz=4)
+        props.cushion_gas = "N2"
+        props.initial_h2_mole_fraction = 0.0
+        sim = UHSFieldScale3D(props, wells)
+        res = sim.run_schedule(sched, dt_days=5.0, snap_times_d=[70.0])
+        m = res.metrics
+        self.assertEqual(m["converged"], 1.0)
+        self.assertLess(m["mass_balance_error"], 1e-6)
+        # Only H2 carries a heating value, so withdrawn LHV energy gives produced H2 mass.
+        produced_h2 = m["total_withdrawn_energy_GWh_LHV"] * 3.6e12 / heating_values_mass()[1]
+        m_cg = GAS_COMPONENTS["N2"].molar_mass
+        snap = res.snapshots[-1]
+        h2_in_place = sum(
+            sim._rho(P, T, y)
+            * sim.Vp
+            * sim._pv_mult(P)
+            * (y * M_H2 / (y * M_H2 + (1.0 - y) * m_cg))
+            for P, T, y in zip(snap.P_Pa, snap.T_K, snap.h2_mole_fraction)
+        )
+        net = m["total_injected_t"] * 1000.0 - produced_h2
+        self.assertLess(abs(h2_in_place - net) / net, 1e-4)
+
+    def test_gravity_override_lock_exchange(self) -> None:
+        from h2multisim.models.three_d import Reservoir3DProps, Schedule3D, WellSpec3D
+
+        nx, nz = 4, 4
+        props = Reservoir3DProps(
+            Lx=40.0, Ly=10.0, Lz=20.0, phi=0.2, k=mD_to_m2(1000.0), Ct=0.0,
+            P_init=80e5, T_init=320.0, nx=nx, ny=1, nz=nz, tau_days=0.0,
+            cushion_gas="N2", initial_h2_mole_fraction=0.0,
+            dispersivity_m=0.0, molecular_diffusivity_m2_s=0.0,
+        )  # fmt: skip
+        sim = UHSFieldScale3D(props, [WellSpec3D(0, 0, 0, 0, name="X")])
+        # H2 fills the left half, N2 the right half (no dispersion).
+        sim.y = [[[1.0 if i < nx // 2 else 0.0] * nz] for i in range(nx)]
+        P = sim._hydrostatic_init([[[80e5] * nz] for _ in range(nx)], nx, 1, nz)
+        T = [[[320.0] * nz] for _ in range(nx)]
+        ctrl = Schedule3D("s", "shut_in", 1.0, 0.0, 0.0)
+        for _ in range(8):
+            P, T, _ = sim._solve_pressure(P, T, ctrl, 86400.0 / 4)
+            sim.y = sim._last_y_new
+        right = nx // 2
+        # Light H2 over-rides along the top; dense N2 slumps along the bottom.
+        self.assertGreater(sim.y[right][0][nz - 1], sim.y[right][0][0] + 0.1)
+        self.assertLess(sim.y[right - 1][0][0], sim.y[right - 1][0][nz - 1] - 0.1)
+
+    def test_single_gas_unchanged(self) -> None:
+        props, wells, sched = scenario_gravity_override(nx=3, ny=3, nz=3)
+        self.assertFalse(UHSFieldScale3D(props, wells)._is_multicomponent)
 
 
 class TestModeValidation(unittest.TestCase):
