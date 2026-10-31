@@ -342,6 +342,45 @@ class TestCushionGas3D(unittest.TestCase):
         self.assertFalse(UHSFieldScale3D(props, wells)._is_multicomponent)
 
 
+class TestVerifyAndCLI(unittest.TestCase):
+    def test_verify_all_checks_pass(self) -> None:
+        from h2multisim.verify import run_checks
+
+        failed = [
+            f"{c.name} {c.condition}: {100 * c.error:+.2f}%" for c in run_checks() if not c.passed
+        ]
+        self.assertEqual(failed, [])
+
+    def test_viscosity_within_half_percent(self) -> None:
+        from h2multisim.verify import H2_STATE_REFS
+
+        eos = PengRobinsonH2(peneloux=True)
+        for T, Pb, _, mu_ref, _ in H2_STATE_REFS:
+            with self.subTest(T=T, P=Pb):
+                mu = viscosity_h2(T, Pb * 1e5, eos=eos) * 1e6
+                self.assertLess(abs(mu / mu_ref - 1.0), 0.005)
+
+    def test_cli_json_output(self) -> None:
+        import json
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "m.json")
+            proc = subprocess.run(
+                [sys.executable, "-m", "h2multisim", "run", "--scale", "0d", "--scenario",
+                 "okoroafor", "--dt-days", "60", "--out-dir", tmp, "--json", out],
+                capture_output=True, text=True, check=False,
+                env={**os.environ, "PYTHONPATH": os.path.join(os.path.dirname(__file__), "..", "src")},
+            )  # fmt: skip
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with open(out, encoding="utf-8") as fh:
+                data = json.load(fh)
+        self.assertEqual(data["scale"], "0d")
+        self.assertEqual(data["scenario"], "okoroafor")
+        self.assertIn("working_gas_energy_GWh_LHV", data["metrics"])
+
+
 class TestModeValidation(unittest.TestCase):
     def test_unknown_modes_rejected(self) -> None:
         with self.assertRaises(ValueError):

@@ -554,7 +554,9 @@ class TestH2MultiSimValidation(unittest.TestCase):
             dt_days=0.2,
         )
         withdrawn_t = result.metrics["total_withdrawn_kg"] / 1e3
-        self.assertAlmostEqual(withdrawn_t, 6575.0, delta=65.8)
+        # Independent mass-conservative reference (audit/bench_1d_bhp.py) with the v1.8.0
+        # viscosity correlation: 6496.9 t (6575 t with the pre-v1.8 viscosity).
+        self.assertAlmostEqual(withdrawn_t, 6496.9, delta=65.0)
         self.assertLess(result.metrics["mass_balance_error"], 1e-6)
 
     # ── 27. 2D mass balance closure ─────────────────────────────────────────

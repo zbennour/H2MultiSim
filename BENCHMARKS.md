@@ -200,7 +200,7 @@ All benchmark criteria are embedded directly into H2MultiSim's automated test su
 | `test_02` | `test_02_eos_density_okoroafor` | Okoroafor (2022) | Density error $< 1.5\%$ at $40\text{–}100\text{ bar}$ |
 | `test_05` | `test_05_viscosity_benchmarks` | Muzny / NIST (2013) | Dense gas viscosity error $< 2.0\%$ |
 | `test_07` | `test_07_joule_thomson` | CoolProp 8.0.0 | Negative $\mu_{\text{JT}}$ within $< 5.0\%$ |
-| `test_32` | `test_32_peneloux_translation` | CoolProp 8.0.0 | Peneloux $Z(P)$ error $< 0.85\%$ ($1\text{–}350\text{ bar}$) |
+| `test_32` | `test_32_peneloux_translation` | CoolProp 8.0.0 | Peneloux $Z(P)$ error $< 0.85\%$ ($1\text{–}350\text{ bar}$, 280–450 K) |
 | `test_38` | `test_38_analytical_real_gas_pseudopressure` | Al-Hussainy et al. (1966) | Flowing BHP error $< 0.50\%$, spatial profile $< 0.25\%$ |
 | `test_39` | `test_39_eclipse_deck_export` | OPM Flow / ECLIPSE | Monotonic $B_g$, valid keyword structures across 1D/2D/3D |
 

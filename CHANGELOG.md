@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.8.0 — 2026-10-31
+
+### CLI (AUDIT.md §4.10)
+- New `h2multisim verify`: checks the installed thermodynamic core (H2 Z, viscosity, Cp over 250–400 K × 10–300 bar; isentropic ΔT; JT at 100 bar; CH4/CO2/N2 density and viscosity) against reference values embedded from CoolProp 8.0.0, prints the table and exits non-zero on any failure. No CoolProp dependency. Runs in the CI package job.
+- `run --json PATH` (`-` for stdout) writes the run metrics, scenario and version (plus Monte Carlo statistics with `--mc`) as JSON; `run --quiet` suppresses the report.
+
+### Accuracy corrections found by `verify`
+- **H2 viscosity refit.** The correlation was 1.7–3.0 % low at high pressure (e.g. −2.6 % at 250 K / 300 bar), contrary to the documented "< 1.5 %". The dilute-gas scale and dense-fluid residual are refitted to CoolProp over 250–450 K, 1–350 bar: max error 0.49 % (0.35 % on the verify grid). Results shift slightly; the 2D golden values and the 1D constant-BHP reference (now 6 496.9 t from `audit/bench_1d_bhp.py`) were regenerated.
+- **Z-factor envelope corrected in the docs.** Peneloux PR is within 0.85 % at 280–450 K but up to 1.2 % at 250 K (previously stated as ≤ 0.85 % throughout).
+
 ## v1.7.0 — 2026-10-31
 
 ### 3D cushion-gas mixing
