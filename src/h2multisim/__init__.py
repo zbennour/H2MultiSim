@@ -53,6 +53,7 @@ from h2multisim.thermo import (
     cp_specific_real_h2,
     enthalpy_molar,
     gamma_real_h2,
+    heating_values_mass,
     internal_energy_molar,
     isentropic_exponent,
     joule_thomson_coefficient,
@@ -63,6 +64,7 @@ from h2multisim.thermo import (
 from h2multisim.units import (
     C_to_K,
     F_to_K,
+    J_to_GWh,
     K_to_C,
     K_to_F,
     MPa_to_pa,
@@ -84,7 +86,7 @@ from h2multisim.units import (
     tonnes_to_kg,
 )
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 __all__ = [
     "__version__",
     # Main multi-scale simulators
@@ -124,6 +126,7 @@ __all__ = [
     "RelativePermeabilityModel",
     "viscosity_h2",
     "gamma_real_h2",
+    "heating_values_mass",
     "joule_thomson_coefficient",
     "adiabatic_temperature",
     "thermal_relaxation_update",
@@ -135,6 +138,7 @@ __all__ = [
     "isentropic_exponent",
     "cp_specific_real_h2",
     # Units
+    "J_to_GWh",
     "pa_to_bar",
     "bar_to_pa",
     "pa_to_MPa",

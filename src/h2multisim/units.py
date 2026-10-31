@@ -95,6 +95,17 @@ def lb_to_kg(m: float) -> float:
     return m / 2.2046226218487757
 
 
+# ── Energy conversions ───────────────────────────────────────────────────────
+def J_to_GWh(E: float) -> float:
+    """Convert joules to gigawatt-hours."""
+    return E / 3.6e12
+
+
+def GWh_to_J(E: float) -> float:
+    """Convert gigawatt-hours to joules."""
+    return E * 3.6e12
+
+
 # ── Volume & Permeability conversions ────────────────────────────────────────
 def m3_to_cubic_feet(V: float) -> float:
     """Convert cubic metres to cubic feet."""

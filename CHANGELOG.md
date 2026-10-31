@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.6.0 — 2026-10-31
+
+### Energy metrics (AUDIT.md §4.10)
+- Every tier now reports stored and cycled energy in GWh (HHV and LHV): `total_injected_energy_GWh_*`, `total_withdrawn_energy_GWh_*`, `working_gas_energy_GWh_*`, and in 0D/1D `withdrawn_to_injected_energy_pct`.
+- Energy uses the actual stream composition: injected gas at the injected-stream heating value, produced gas at the produced composition (0D: including plume segregation; 1D: the well-block composition). Cushion-gas dilution is therefore reflected in the withdrawn energy. Working gas is valued at the injected-stream heating value (design-capacity basis).
+- New `heating_values_mass(composition)` (J/kg; pure H2 LHV 119.95 MJ/kg = 33.32 kWh/kg) and `J_to_GWh` / `GWh_to_J` unit helpers. The CLI prints working-gas and withdrawn energy.
+
+### 2D cushion-gas mixing
+- `Reservoir2DProps` gains `cushion_gas`, `initial_h2_mole_fraction`, `dispersivity_m` and `molecular_diffusivity_m2_s` (also in configs). `UHSAreal2D` then tracks a per-cell H2 mole fraction with implicit upwind advection–dispersion (as in the 1D tier). Densities and viscosities come from the mixture EOS, and composition is coupled into the Picard loop.
+- The pressure–composition coupling is stiff (H2 is ~14× lighter than N2). An Anderson accelerator (`AndersonAccelerator`, depth 3) restores convergence: mass-balance error 2e-8 and H2 species balance exact to < 1e-4 on an N2-cushion cycle.
+- New outputs: `per_well_h2_mole_fraction`, `Snapshot2D.h2_mole_fraction`, `min_withdrawn_h2_purity_mol_pct`, `mean_final_h2_mol_pct`, `transport_unconverged_solves`. Withdrawn energy uses the produced composition.
+- Single-gas runs take the previous code path unchanged. 1D/2D deck exports add a header warning when a non-H2 cushion gas is modelled (the decks are single-component).
+
+### Fixes
+- `min_withdrawn_h2_purity_mol_pct` (0D/1D/2D) is now the minimum over withdrawal steps only. It previously started from the initial H2 fraction, so it was stuck at 0 for a pure cushion-gas start.
+
 ## v1.5.0 — 2026-10-31
 
 ### Performance (AUDIT.md §4.9)

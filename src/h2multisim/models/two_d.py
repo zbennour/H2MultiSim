@@ -12,15 +12,20 @@ import math
 import os
 from dataclasses import dataclass, field
 
-from h2multisim.models._common import check_inputs, pcg_solve, validate_mode
+from h2multisim.models._common import AndersonAccelerator, check_inputs, pcg_solve, validate_mode
 from h2multisim.thermo import (
+    GAS_COMPONENTS,
+    M_H2,
     PengRobinsonH2,
+    PengRobinsonMixture,
     RelativePermeabilityModel,
     coupled_temperature_update,
+    heating_values_mass,
     isentropic_exponent,
     viscosity_h2,
 )
 from h2multisim.units import (
+    J_to_GWh,
     K_to_C,
     bar_to_pa,
     kg_to_tonnes,
@@ -55,6 +60,10 @@ class Reservoir2DProps:
     rel_perm: RelativePermeabilityModel | None = (
         None  # Optional two-phase relative permeability model
     )
+    cushion_gas: str = "H2"  # Native cushion gas species ('H2', 'CH4', 'CO2', 'N2')
+    initial_h2_mole_fraction: float | None = None  # None -> 1.0 if cushion is H2 else 0.0
+    dispersivity_m: float = 0.5  # m longitudinal mechanical dispersivity α_L
+    molecular_diffusivity_m2_s: float = 1.0e-5  # m²/s effective pore molecular diffusivity
 
     def __post_init__(self) -> None:
         check_inputs(
@@ -69,9 +78,24 @@ class Reservoir2DProps:
                 "P_init": self.P_init,
                 "T_init": self.T_init,
             },
-            non_negative={"Ct": self.Ct, "tau_days": self.tau_days},
+            non_negative={
+                "Ct": self.Ct,
+                "tau_days": self.tau_days,
+                "dispersivity_m": self.dispersivity_m,
+                "molecular_diffusivity_m2_s": self.molecular_diffusivity_m2_s,
+            },
             fraction={"phi": self.phi},
         )
+        self.cushion_gas = self.cushion_gas.strip().upper()
+        if self.cushion_gas not in GAS_COMPONENTS:
+            raise ValueError(
+                f"Reservoir2DProps: unknown cushion_gas {self.cushion_gas!r}; "
+                f"choose from {list(GAS_COMPONENTS)}"
+            )
+        if self.initial_h2_mole_fraction is not None and not (
+            0.0 <= self.initial_h2_mole_fraction <= 1.0
+        ):
+            raise ValueError("Reservoir2DProps: initial_h2_mole_fraction must be in [0, 1]")
         if self.peneloux and self.volume_translation == 0.0:
             self.volume_translation = -4.0e-6
 
@@ -132,6 +156,7 @@ class Snapshot2D:
     ys_m: list[float]
     P_Pa: list[float]
     T_K: list[float]
+    h2_mole_fraction: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -145,6 +170,7 @@ class Result2D:
     q_total_kg_s: list[float] = field(default_factory=list)
     per_well_q: dict[str, list[float]] = field(default_factory=dict)
     per_well_BHP: dict[str, list[float]] = field(default_factory=dict)
+    per_well_h2_mole_fraction: dict[str, list[float]] = field(default_factory=dict)
     snapshots: list[Snapshot2D] = field(default_factory=list)
     metrics: dict[str, float] = field(default_factory=dict)
 
@@ -155,7 +181,8 @@ SimulationResult2D = Result2D
 class UHSAreal2D:
     """
     Implicit 2D areal finite-volume UHS simulator.
-    Solves pressure implicitly using Successive Over-Relaxation (SOR) with Peaceman well model.
+    Implicit pressure (PCG or SOR) with Peaceman wells, optional binary H2 + cushion-gas
+    composition transport (implicit upwind advection–dispersion).
     """
 
     def __init__(
@@ -220,6 +247,21 @@ class UHSAreal2D:
             seen_names.add(w.name)
             self._well_by_name[w.name] = w
 
+        # Binary H2 + cushion-gas composition (mirrors UHSRadial1D).
+        cg = props.cushion_gas
+        self._cushion_gas: str = cg
+        y_raw = props.initial_h2_mole_fraction
+        self._y_init: float = float(y_raw) if y_raw is not None else (1.0 if cg == "H2" else 0.0)
+        self._is_multicomponent: bool = not (cg == "H2" or self._y_init >= 1.0 - 1e-12)
+        self._mix_eos = PengRobinsonMixture(
+            composition={"H2": 1.0},
+            peneloux=props.peneloux,
+            volume_translation=props.volume_translation or None,
+        )
+        self.y: list[list[float]] = [[self._y_init] * props.ny for _ in range(props.nx)]
+        self._last_y_new: list[list[float]] = [list(row) for row in self.y]
+        self._transport_failures: int = 0
+
         if props.k_field is not None:
             if len(props.k_field) != props.nx or any(len(row) != props.ny for row in props.k_field):
                 raise ValueError(f"k_field dimensions must match (nx={props.nx}, ny={props.ny})")
@@ -230,6 +272,35 @@ class UHSAreal2D:
     def _pv_mult(self, P: float) -> float:
         """Pore-volume multiplier exp(Ct·(P − P_init)) for rock (pore) compressibility Ct."""
         return math.exp(self.props.Ct * (P - self.props.P_init))
+
+    # ── Composition-aware cell properties (single-gas path uses self.eos directly) ──
+    def _comp_at(self, y_val: float) -> dict[str, float]:
+        if not self._is_multicomponent or y_val >= 1.0 - 1e-12:
+            return {"H2": 1.0}
+        if y_val <= 1e-12:
+            return {self._cushion_gas: 1.0}
+        return {"H2": y_val, self._cushion_gas: 1.0 - y_val}
+
+    def _rho(self, P: float, T: float, y_val: float) -> float:
+        if not self._is_multicomponent:
+            return self.eos.density(P, T)
+        return self._mix_eos.density(P, T, self._comp_at(y_val))
+
+    def _drho(self, P: float, T: float, y_val: float) -> float:
+        if not self._is_multicomponent:
+            return self.eos.drho_dP(P, T)
+        return self._mix_eos.drho_dP(P, T, self._comp_at(y_val))
+
+    def _mu(self, T: float, P: float, rho: float, y_val: float) -> float:
+        if not self._is_multicomponent:
+            return viscosity_h2(T, P, rho=rho, eos=self.eos)
+        return self._mix_eos.viscosity(P, T, rho=rho, composition=self._comp_at(y_val))
+
+    def _exponent(self, T: float, P: float, y_val: float) -> float:
+        if not self._is_multicomponent:
+            return isentropic_exponent(T, P, self.eos)
+        self._mix_eos.set_composition(self._comp_at(y_val))
+        return isentropic_exponent(T, P, self._mix_eos)
 
     def _k_harm_x(self, i: int, j: int) -> float:
         kL = self.k[i][j]
@@ -247,20 +318,22 @@ class UHSAreal2D:
 
     def _Tx(self, i: int, j: int, P: list[list[float]], T: list[list[float]]) -> float:
         kh = self._k_harm_x(i, j)
-        rhoL = self.eos.density(P[i][j], T[i][j])
-        rhoR = self.eos.density(P[i + 1][j], T[i + 1][j])
-        muL = viscosity_h2(T[i][j], P[i][j], rho=rhoL, eos=self.eos)
-        muR = viscosity_h2(T[i + 1][j], P[i + 1][j], rho=rhoR, eos=self.eos)
+        y = self.y
+        rhoL = self._rho(P[i][j], T[i][j], y[i][j])
+        rhoR = self._rho(P[i + 1][j], T[i + 1][j], y[i + 1][j])
+        muL = self._mu(T[i][j], P[i][j], rhoL, y[i][j])
+        muR = self._mu(T[i + 1][j], P[i + 1][j], rhoR, y[i + 1][j])
         rho_h = 2.0 * rhoL * rhoR / (rhoL + rhoR + 1e-30)
         mu_h = 2.0 * muL * muR / (muL + muR + 1e-30)
         return kh * self.props.h * self.dy * rho_h / (mu_h * self.dx)
 
     def _Ty(self, i: int, j: int, P: list[list[float]], T: list[list[float]]) -> float:
         kh = self._k_harm_y(i, j)
-        rhoB = self.eos.density(P[i][j], T[i][j])
-        rhoT = self.eos.density(P[i][j + 1], T[i][j + 1])
-        muB = viscosity_h2(T[i][j], P[i][j], rho=rhoB, eos=self.eos)
-        muT = viscosity_h2(T[i][j + 1], P[i][j + 1], rho=rhoT, eos=self.eos)
+        y = self.y
+        rhoB = self._rho(P[i][j], T[i][j], y[i][j])
+        rhoT = self._rho(P[i][j + 1], T[i][j + 1], y[i][j + 1])
+        muB = self._mu(T[i][j], P[i][j], rhoB, y[i][j])
+        muT = self._mu(T[i][j + 1], P[i][j + 1], rhoT, y[i][j + 1])
         rho_h = 2.0 * rhoB * rhoT / (rhoB + rhoT + 1e-30)
         mu_h = 2.0 * muB * muT / (muB + muT + 1e-30)
         return kh * self.props.h * self.dx * rho_h / (mu_h * self.dy)
@@ -271,8 +344,9 @@ class UHSAreal2D:
         ln_r = math.log(max(r_eq, w.r_w * 1.001) / w.r_w)
         ln_r = max(ln_r, 0.1)
         k_w = self.k[w.i][w.j]
-        rho = self.eos.density(P[w.i][w.j], T[w.i][w.j])
-        mu = viscosity_h2(T[w.i][w.j], P[w.i][w.j], rho=rho, eos=self.eos)
+        y_w = self.y[w.i][w.j]
+        rho = self._rho(P[w.i][w.j], T[w.i][w.j], y_w)
+        mu = self._mu(T[w.i][w.j], P[w.i][w.j], rho, y_w)
         return 2.0 * math.pi * k_w * self.props.h * rho / (mu * ln_r)
 
     def _assemble_well_contributions_2d(self, ctrl, Pk, Tk, rate_q, shut_wells, nx, ny):
@@ -309,9 +383,13 @@ class UHSAreal2D:
         T_geo = self.props.T_init
         Pk = [list(row) for row in P_old]
         Tk = [list(row) for row in T_old]
+        y_k = [list(row) for row in self.y]
         wi_final: dict[str, float] = {w.name: 0.0 for w in self.wells}
+        accel = AndersonAccelerator(m=3) if self._is_multicomponent else None
+        # The coupled pressure-composition map needs more iterations than single gas.
+        n_picard = max(self.max_picard, 60) if self._is_multicomponent else self.max_picard
 
-        for _picard in range(self.max_picard):
+        for _picard in range(n_picard):
             Tk = [
                 [
                     coupled_temperature_update(
@@ -328,8 +406,12 @@ class UHSAreal2D:
                 ]
                 for i in range(nx)
             ]
-            rho_k = [[self.eos.density(Pk[i][j], Tk[i][j]) for j in range(ny)] for i in range(nx)]
-            drho = [[self.eos.drho_dP(Pk[i][j], Tk[i][j]) for j in range(ny)] for i in range(nx)]
+            rho_k = [
+                [self._rho(Pk[i][j], Tk[i][j], y_k[i][j]) for j in range(ny)] for i in range(nx)
+            ]
+            drho = [
+                [self._drho(Pk[i][j], Tk[i][j], y_k[i][j]) for j in range(ny)] for i in range(nx)
+            ]
 
             vp_k = [[self.Vp * self._pv_mult(Pk[i][j]) for j in range(ny)] for i in range(nx)]
             B = [
@@ -360,9 +442,36 @@ class UHSAreal2D:
 
             change = max(abs(P_new[i][j] - Pk[i][j]) for i in range(nx) for j in range(ny))
             self._last_picard_residual_Pa = change
+            if accel is not None and change >= self.picard_tol_Pa:
+                # Pressure and composition are strongly coupled (H2 is ~10x lighter than
+                # the cushion gas): accelerate the linearly convergent Picard map.
+                x_acc = accel.step(
+                    [Pk[i][j] for i in range(nx) for j in range(ny)],
+                    [P_new[i][j] for i in range(nx) for j in range(ny)],
+                )
+                P_new = [[max(x_acc[i * ny + j], 1.0e3) for j in range(ny)] for i in range(nx)]
             Pk = P_new
+
+            if self._is_multicomponent:
+                q_est = {}
+                for w in self.wells:
+                    mode_w = ctrl.mode_for(w.name)
+                    if mode_w == "shut_in" or w.name in shut_wells:
+                        q_est[w.name] = 0.0
+                    elif w.name in rate_q:
+                        q_est[w.name] = rate_q[w.name]
+                    else:
+                        q_est[w.name] = wi_now[w.name] * (ctrl.bhp_target - Pk[w.i][w.j])
+                y_next = self._solve_transport(P_old, Pk, Tk, rho_old, tx, ty, q_est, dt)
+                y_change = max(abs(y_next[i][j] - y_k[i][j]) for i in range(nx) for j in range(ny))
+                y_k = y_next
+                if y_change > 1e-9:
+                    continue
+
             if change < self.picard_tol_Pa:
                 break
+
+        self._last_y_new = y_k
 
         # Make temperature exactly consistent with the converged pressure.
         Tk = [
@@ -399,6 +508,86 @@ class UHSAreal2D:
             per_well[w.name] = (q, bhp)
 
         return Pk, Tk, per_well
+
+    def _solve_transport(self, P_old, Pk, Tk, rho_old, tx, ty, q_well, dt):
+        """
+        Implicit upwind advection–dispersion of the H2 mass fraction (advective
+        form, as in UHSRadial1D): injected gas is pure H2; production removes the
+        well-cell composition.  The matrix is a diagonally dominant M-matrix, so
+        Gauss–Seidel converges.  Returns updated H2 mole fractions.
+        """
+        nx, ny = self.nx, self.ny
+        M_cg = GAS_COMPONENTS[self._cushion_gas].molar_mass
+        w_old = [
+            [
+                self.y[i][j] * M_H2 / max(self.y[i][j] * M_H2 + (1.0 - self.y[i][j]) * M_cg, 1e-30)
+                for j in range(ny)
+            ]
+            for i in range(nx)
+        ]
+        m_old = [
+            [max(self.Vp * self._pv_mult(P_old[i][j]) * rho_old[i][j], 1e-12) for j in range(ny)]
+            for i in range(nx)
+        ]
+        alpha_L = self.props.dispersivity_m
+        D_mol = self.props.molecular_diffusivity_m2_s
+        h, phi = self.props.h, self._phi_eff
+
+        # Per-cell list of (neighbour i, j, coupling) where coupling = inflow + dispersion.
+        coup: list[list[list[tuple[int, int, float]]]] = [
+            [[] for _ in range(ny)] for _ in range(nx)
+        ]
+
+        def link(i1, j1, i2, j2, T_link, area, dist):
+            F = T_link * (Pk[i1][j1] - Pk[i2][j2])  # kg/s from cell 1 to cell 2
+            rho_avg = 0.5 * (
+                self._rho(Pk[i1][j1], Tk[i1][j1], self.y[i1][j1])
+                + self._rho(Pk[i2][j2], Tk[i2][j2], self.y[i2][j2])
+            )
+            v = abs(F) / max(area * rho_avg, 1e-12)
+            G = area * rho_avg * (D_mol + alpha_L * v) / dist
+            coup[i2][j2].append((i1, j1, max(F, 0.0) + G))
+            coup[i1][j1].append((i2, j2, max(-F, 0.0) + G))
+
+        for i in range(nx - 1):
+            for j in range(ny):
+                link(i, j, i + 1, j, tx[i][j], self.dy * h * phi, self.dx)
+        for i in range(nx):
+            for j in range(ny - 1):
+                link(i, j, i, j + 1, ty[i][j], self.dx * h * phi, self.dy)
+
+        q_inj = [[0.0] * ny for _ in range(nx)]
+        for w in self.wells:
+            q_inj[w.i][w.j] += max(q_well.get(w.name, 0.0), 0.0)
+
+        w_new = [list(row) for row in w_old]
+        for _ in range(500):
+            max_dw = 0.0
+            for i in range(nx):
+                for j in range(ny):
+                    base = m_old[i][j] / dt
+                    diag = base + q_inj[i][j]
+                    rhs = base * w_old[i][j] + q_inj[i][j]
+                    for i2, j2, c in coup[i][j]:
+                        diag += c
+                        rhs += c * w_new[i2][j2]
+                    w_val = min(max(rhs / diag, 0.0), 1.0)
+                    max_dw = max(max_dw, abs(w_val - w_new[i][j]))
+                    w_new[i][j] = w_val
+            if max_dw < 1e-12:
+                break
+        else:
+            self._transport_failures += 1
+
+        y_new = []
+        for i in range(nx):
+            row = []
+            for j in range(ny):
+                n_h2 = w_new[i][j] / M_H2
+                n_cg = (1.0 - w_new[i][j]) / M_cg
+                row.append(n_h2 / max(n_h2 + n_cg, 1e-30))
+            y_new.append(row)
+        return y_new
 
     def _linear_system_2d(self, B, rhs0, well_diag, well_rhs, tx, ty):
         """Flat (diag, neighbours, rhs) of the 2D pressure system, index i·ny + j."""
@@ -487,13 +676,14 @@ class UHSAreal2D:
         nx, ny = self.nx, self.ny
         # Isentropic exponent at the start-of-step state, reused by every Picard iteration.
         self._n_exp = [
-            [isentropic_exponent(T_old[i][j], P_old[i][j], self.eos) for j in range(ny)]
+            [self._exponent(T_old[i][j], P_old[i][j], self.y[i][j]) for j in range(ny)]
             for i in range(nx)
         ]
         tx = [[self._Tx(i, j, P_old, T_old) for j in range(ny)] for i in range(nx - 1)]
         ty = [[self._Ty(i, j, P_old, T_old) for j in range(ny - 1)] for i in range(nx)]
         rho_old = [
-            [self.eos.density(P_old[i][j], T_old[i][j]) for j in range(ny)] for i in range(nx)
+            [self._rho(P_old[i][j], T_old[i][j], self.y[i][j]) for j in range(ny)]
+            for i in range(nx)
         ]
 
         rate_q: dict[str, float] = {}
@@ -574,6 +764,9 @@ class UHSAreal2D:
 
         self._sor_failures = 0
         self._active_set_failures = 0
+        self._transport_failures = 0
+        self.y = [[self._y_init] * ny for _ in range(nx)]
+        self._last_y_new = [list(row) for row in self.y]
         P = [[self.props.P_init] * ny for _ in range(nx)]
         T = [[self.props.T_init] * ny for _ in range(nx)]
 
@@ -581,6 +774,7 @@ class UHSAreal2D:
         for w in self.wells:
             result.per_well_q[w.name] = []
             result.per_well_BHP[w.name] = []
+            result.per_well_h2_mole_fraction[w.name] = []
 
         snap_targets = sorted(snap_days or [])
         snap_idx = 0
@@ -588,15 +782,16 @@ class UHSAreal2D:
         cum_inj = 0.0
         cum_wdr = 0.0
         max_picard_res = 0.0
+        hhv_h2, lhv_h2 = heating_values_mass()  # injected stream is pure H2
+        e_wdr = [0.0, 0.0]  # J (HHV, LHV) withdrawn, at the produced composition
+        min_wdr_y_h2 = math.inf  # minimum over withdrawal steps only
 
         P_max = self.props.P_init
         P_min = self.props.P_init
         T_max = self.props.T_init
         T_min = self.props.T_init
-        m_initial = sum(
-            self.eos.density(self.props.P_init, self.props.T_init) * self.Vp
-            for _ in range(nx)
-            for _ in range(ny)
+        m_initial = (
+            self._rho(self.props.P_init, self.props.T_init, self._y_init) * self.Vp * nx * ny
         )
 
         for ctrl in schedule:
@@ -604,6 +799,7 @@ class UHSAreal2D:
             dt_act = ctrl.duration_d * 86400.0 / n_steps
             for _ in range(n_steps):
                 P_new, T_new, per_well = self._solve_pressure(P, T, ctrl, dt_act)
+                self.y = self._last_y_new
                 max_picard_res = max(max_picard_res, self._last_picard_residual_Pa)
                 t_d += dt_act / 86400.0
 
@@ -615,8 +811,16 @@ class UHSAreal2D:
 
                 for w in self.wells:
                     q_w, bhp_w = per_well[w.name]
+                    y_w = self.y[w.i][w.j]
                     result.per_well_q[w.name].append(q_w)
                     result.per_well_BHP[w.name].append(pa_to_bar(bhp_w))
+                    result.per_well_h2_mole_fraction[w.name].append(y_w)
+                    if q_w < 0.0:
+                        hhv_p, lhv_p = heating_values_mass(self._comp_at(y_w))
+                        e_wdr[0] += -q_w * dt_act * hhv_p
+                        e_wdr[1] += -q_w * dt_act * lhv_p
+                        if q_w < -1e-9:
+                            min_wdr_y_h2 = min(min_wdr_y_h2, y_w)
 
                 P = P_new
                 T = T_new
@@ -630,7 +834,7 @@ class UHSAreal2D:
                 T_min = min(T_min, min(T_flat))
 
                 m_tot = sum(
-                    self.eos.density(P[i][j], T[i][j]) * self.Vp * self._pv_mult(P[i][j])
+                    self._rho(P[i][j], T[i][j], self.y[i][j]) * self.Vp * self._pv_mult(P[i][j])
                     for i in range(nx)
                     for j in range(ny)
                 )
@@ -649,6 +853,7 @@ class UHSAreal2D:
                             ys_m=[self.ys[j] for _ in range(nx) for j in range(ny)],
                             P_Pa=P_flat,
                             T_K=T_flat,
+                            h2_mole_fraction=[self.y[i][j] for i in range(nx) for j in range(ny)],
                         )
                     )
                     snap_idx += 1
@@ -674,15 +879,30 @@ class UHSAreal2D:
             "total_withdrawn_t": kg_to_tonnes(cum_wdr),
             "net_stored_t": kg_to_tonnes(net_kg),
             "cycled_gas_t": kg_to_tonnes(cum_inj + cum_wdr),
+            # Injected gas is pure H2; produced energy uses the well-cell composition.
+            "total_injected_energy_GWh_LHV": J_to_GWh(cum_inj * lhv_h2),
+            "total_injected_energy_GWh_HHV": J_to_GWh(cum_inj * hhv_h2),
+            "total_withdrawn_energy_GWh_LHV": J_to_GWh(e_wdr[1]),
+            "total_withdrawn_energy_GWh_HHV": J_to_GWh(e_wdr[0]),
+            "working_gas_energy_GWh_LHV": J_to_GWh((m_max - m_min) * 1000.0 * lhv_h2),
+            "working_gas_energy_GWh_HHV": J_to_GWh((m_max - m_min) * 1000.0 * hhv_h2),
             "mass_balance_error": mb_err,
             "max_picard_residual_Pa": max_picard_res,
             "sor_unconverged_solves": float(self._sor_failures),
             "active_set_unconverged_steps": float(self._active_set_failures),
+            "transport_unconverged_solves": float(self._transport_failures),
+            "initial_h2_purity_mol_pct": self._y_init * 100.0,
+            "min_withdrawn_h2_purity_mol_pct": (
+                min_wdr_y_h2 if math.isfinite(min_wdr_y_h2) else self._y_init
+            )
+            * 100.0,
+            "mean_final_h2_mol_pct": 100.0 * sum(map(sum, self.y)) / (nx * ny),
             "converged": (
                 1.0
                 if max_picard_res < self.picard_tol_Pa
                 and self._sor_failures == 0
                 and self._active_set_failures == 0
+                and self._transport_failures == 0
                 else 0.0
             ),
         }

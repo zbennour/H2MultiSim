@@ -20,9 +20,11 @@ from h2multisim.thermo import (
     PengRobinsonMixture,
     RelativePermeabilityModel,
     coupled_temperature_update,
+    heating_values_mass,
     viscosity_h2,
 )
 from h2multisim.units import (
+    J_to_GWh,
     K_to_C,
     bar_to_pa,
     kg_to_tonnes,
@@ -587,6 +589,9 @@ class UHSRadial1D:
         cum_inj = 0.0
         cum_wdr = 0.0
         cum_boundary = 0.0
+        hhv_h2, lhv_h2 = heating_values_mass({"H2": 1.0})  # injected stream is pure H2
+        e_inj = [0.0, 0.0]  # J (HHV, LHV)
+        e_wdr = [0.0, 0.0]
         t = 0.0
         snap_targets = sorted(snap_days or [])
         snap_idx = 0
@@ -597,7 +602,7 @@ class UHSRadial1D:
         m_max = m_initial
         m_min = m_initial
         max_picard_res = 0.0
-        min_wdr_y_h2 = self._y_init
+        min_wdr_y_h2 = math.inf  # minimum over withdrawal steps only
 
         for ctrl in schedule:
             n_steps = max(round(ctrl.duration_d / dt_days), 1)
@@ -610,8 +615,14 @@ class UHSRadial1D:
 
                 if q_well >= 0.0:
                     cum_inj += q_well * dt_act
+                    e_inj[0] += q_well * dt_act * hhv_h2
+                    e_inj[1] += q_well * dt_act * lhv_h2
                 else:
                     cum_wdr += (-q_well) * dt_act
+                    # Produced gas has the well-block composition.
+                    hhv_p, lhv_p = heating_values_mass(self._comp_at(self.y_h2[0]))
+                    e_wdr[0] += (-q_well) * dt_act * hhv_p
+                    e_wdr[1] += (-q_well) * dt_act * lhv_p
 
                 P = P_new
                 T = T_new
@@ -664,6 +675,15 @@ class UHSRadial1D:
             "total_withdrawn_kg": cum_wdr,
             "net_stored_kg": net,
             "cycled_gas_kg": cum_inj + cum_wdr,
+            "total_injected_energy_GWh_HHV": J_to_GWh(e_inj[0]),
+            "total_injected_energy_GWh_LHV": J_to_GWh(e_inj[1]),
+            "total_withdrawn_energy_GWh_HHV": J_to_GWh(e_wdr[0]),
+            "total_withdrawn_energy_GWh_LHV": J_to_GWh(e_wdr[1]),
+            "working_gas_energy_GWh_LHV": J_to_GWh((m_max - m_min) * lhv_h2),
+            "working_gas_energy_GWh_HHV": J_to_GWh((m_max - m_min) * hhv_h2),
+            "withdrawn_to_injected_energy_pct": (
+                100.0 * e_wdr[1] / e_inj[1] if e_inj[1] > 0.0 else 0.0
+            ),
             "boundary_influx_kg": cum_boundary,
             "initial_mass_kg": m_initial,
             "final_mass_kg": m_final,
@@ -680,7 +700,10 @@ class UHSRadial1D:
                 result.well_h2_mole_fraction[-1] if result.well_h2_mole_fraction else self._y_init
             )
             * 100.0,
-            "min_withdrawn_h2_purity_mol_pct": min_wdr_y_h2 * 100.0,
+            "min_withdrawn_h2_purity_mol_pct": (
+                min_wdr_y_h2 if math.isfinite(min_wdr_y_h2) else self._y_init
+            )
+            * 100.0,
             "final_well_wobbe_index_MJ_sm3": (
                 result.well_wobbe_index[-1]
                 if result.well_wobbe_index

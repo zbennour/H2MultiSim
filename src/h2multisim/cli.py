@@ -108,9 +108,11 @@ def _run_0d(args: argparse.Namespace) -> int:
     print(f"  Min Operating Pressure : {pa_to_bar(m['min_pressure_Pa']):.2f} bar")
     print(f"  Cushion Gas Stored     : {m['cushion_gas_kg'] / 1e3:.2f} tonnes")
     print(f"  Working Gas Capacity   : {m['working_gas_kg'] / 1e3:.2f} tonnes")
+    print(f"  Working Gas Energy     : {m['working_gas_energy_GWh_LHV']:.2f} GWh (LHV)")
     print(f"  Storage Efficiency     : {m['storage_efficiency_pct']:.1f} %")
     print(f"  Total Injected         : {m['total_injected_kg'] / 1e3:.2f} tonnes")
     print(f"  Total Withdrawn        : {m['total_withdrawn_kg'] / 1e3:.2f} tonnes")
+    print(f"  Withdrawn Energy       : {m['total_withdrawn_energy_GWh_LHV']:.2f} GWh (LHV)")
 
     csv_path = os.path.join(out_dir, f"0d_{scenario}_timeseries.csv")
     export_timeseries_csv(result, csv_path)
@@ -173,6 +175,7 @@ def _run_1d(args: argparse.Namespace) -> int:
     print(f"  Final Wellbore BHP       : {pa_to_bar(m['final_BHP_Pa']):.2f} bar")
     print(f"  Total Gas Injected       : {m['total_injected_kg'] / 1e3:.2f} tonnes")
     print(f"  Total Gas Withdrawn      : {m['total_withdrawn_kg'] / 1e3:.2f} tonnes")
+    print(f"  Withdrawn Energy         : {m['total_withdrawn_energy_GWh_LHV']:.2f} GWh (LHV)")
     print(f"  Net Gas Stored           : {m['net_stored_kg'] / 1e3:.2f} tonnes")
 
     csv_path = os.path.join(out_dir, f"1d_{scenario}_timeseries.csv")
@@ -219,6 +222,7 @@ def _run_2d(args: argparse.Namespace) -> int:
     print(f"  Max Average Pressure     : {m['max_P_bar']:.2f} bar")
     print(f"  Min Average Pressure     : {m['min_P_bar']:.2f} bar")
     print(f"  Working Gas Cycled       : {m['working_gas_t']:.2f} tonnes")
+    print(f"  Working Gas Energy       : {m['working_gas_energy_GWh_LHV']:.2f} GWh (LHV)")
     print(f"  Storage Efficiency       : {m['storage_eff_pct']:.1f} %")
 
     csv_path = os.path.join(out_dir, f"2d_{scenario}_timeseries.csv")
@@ -266,6 +270,7 @@ def _run_3d(args: argparse.Namespace) -> int:
     print(f"  Max Reservoir Pressure   : {m['max_P_bar']:.2f} bar")
     print(f"  Min Reservoir Pressure   : {m['min_P_bar']:.2f} bar")
     print(f"  Working Gas Stored       : {m['working_gas_t']:.2f} tonnes")
+    print(f"  Working Gas Energy       : {m['working_gas_energy_GWh_LHV']:.2f} GWh (LHV)")
     print(f"  Total Injected           : {m['total_injected_t']:.2f} tonnes")
 
     csv_path = os.path.join(out_dir, f"3d_{scenario}_timeseries.csv")
