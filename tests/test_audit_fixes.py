@@ -123,6 +123,42 @@ class TestModeValidation(unittest.TestCase):
             WellControl("p", mode, 1.0, 1e7, 1.0)
 
 
+class TestInputValidation(unittest.TestCase):
+    def test_invalid_reservoir_inputs_rejected(self) -> None:
+        from dataclasses import replace
+
+        props0 = build_okoroafor_reservoir()
+        for field, bad in (("porosity", 0.0), ("porosity", 1.5), ("permeability", -1e-15),
+                           ("reference_temperature", 0.0), ("total_compressibility", -1e-9)):  # fmt: skip
+            with self.subTest(field=field, value=bad), self.assertRaises(ValueError):
+                replace(props0, **{field: bad})
+
+        props1, _ = okoroafor_radial()
+        for field, bad in (("phi", 0.0), ("k", 0.0), ("r_ext", 0.05), ("outer_bc", "open")):
+            with self.subTest(field=field, value=bad), self.assertRaises(ValueError):
+                replace(props1, **{field: bad})
+
+        props2, _, _ = scenario_single_well(nx=4, ny=4)
+        with self.assertRaises(ValueError):
+            replace(props2, nx=0)
+        with self.assertRaises(ValueError):
+            replace(props2, P_init=float("nan"))
+
+    def test_invalid_schedule_inputs_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            SchedulePeriod("p", "inject", 0.0, 1e7, 1.0)
+        with self.assertRaises(ValueError):
+            WellControl("p", "withdraw", 1.0, 1e7, -1.0)
+        with self.assertRaises(ValueError):
+            Schedule3D("p", "inject", -2.0, 1e7, 1.0)
+
+    def test_zero_relaxation_time_allowed(self) -> None:
+        from dataclasses import replace
+
+        props1, _ = okoroafor_radial()
+        self.assertEqual(replace(props1, tau_days=0.0).tau_days, 0.0)
+
+
 class TestMonteCarloWaterSaturation(unittest.TestCase):
     def test_mc_honours_swr(self) -> None:
         def mc_initial_mass(swr: float) -> float:

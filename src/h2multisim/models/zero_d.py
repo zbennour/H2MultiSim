@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Callable
 
-from h2multisim.models._common import validate_mode
+from h2multisim.models._common import check_inputs, validate_mode
 from h2multisim.thermo import (
     IsothermModel,
     PengRobinsonH2,
@@ -78,6 +78,24 @@ class ReservoirProperties:
     )
 
     def __post_init__(self) -> None:
+        check_inputs(
+            "ReservoirProperties",
+            positive={
+                "area": self.area,
+                "thickness": self.thickness,
+                "permeability": self.permeability,
+                "reference_pressure": self.reference_pressure,
+                "reference_temperature": self.reference_temperature,
+                "well_radius": self.well_radius,
+                "drainage_radius": self.drainage_radius,
+                "n_wells": float(self.n_wells),
+            },
+            non_negative={
+                "total_compressibility": self.total_compressibility,
+                "m_sorbent": self.m_sorbent,
+            },
+            fraction={"porosity": self.porosity},
+        )
         if self.peneloux and self.volume_translation == 0.0:
             self.volume_translation = -4.0e-6
 
@@ -108,6 +126,11 @@ class SchedulePeriod:
 
     def __post_init__(self) -> None:
         validate_mode(self.mode, f"schedule period {self.name!r}")
+        check_inputs(
+            f"schedule period {self.name!r}",
+            positive={"duration_days": self.duration_days},
+            non_negative={"bhp_target": self.bhp_target, "max_mass_rate": self.max_mass_rate},
+        )
 
 
 # Alias
