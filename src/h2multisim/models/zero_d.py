@@ -16,12 +16,16 @@ from typing import Callable
 
 from h2multisim.models._common import check_inputs, validate_mode
 from h2multisim.thermo import (
+    M_H2,
     IsothermModel,
     PengRobinsonH2,
     PengRobinsonMixture,
     PoreVolumeModel,
     RelativePermeabilityModel,
+    _real_heat_capacities,
     coupled_temperature_update,
+    enthalpy_molar,
+    internal_energy_molar,
     normalize_composition,
     viscosity_h2,
 )
@@ -76,8 +80,22 @@ class ReservoirProperties:
     rel_perm: RelativePermeabilityModel | None = (
         None  # Optional two-phase relative permeability model
     )
+    # 'energy_balance': m·u balance with injected-gas enthalpy and wall heat transfer
+    # (rate m·cv·(T_rock − T)/τ); 'lumped': legacy isentropic update + exponential relaxation.
+    thermal_model: str = "energy_balance"
+    injection_temperature: float | None = None  # K wellhead/injected gas T (None -> reference)
 
     def __post_init__(self) -> None:
+        if self.thermal_model not in ("energy_balance", "lumped"):
+            raise ValueError(
+                "ReservoirProperties: thermal_model must be 'energy_balance' or 'lumped', "
+                f"got {self.thermal_model!r}"
+            )
+        if self.injection_temperature is not None:
+            check_inputs(
+                "ReservoirProperties",
+                positive={"injection_temperature": self.injection_temperature},
+            )
         check_inputs(
             "ReservoirProperties",
             positive={
@@ -237,6 +255,27 @@ class UHSReservoir0D:
         self.isotherm = props.isotherm or IsothermModel(model="none")
         self._last_step_converged: bool = True
 
+        # Thermal model.  The energy balance does not carry the adsorbed phase's
+        # energy or heat of adsorption, so sorbent stores keep the lumped model.
+        has_sorbent = props.m_sorbent > 0.0 and self.isotherm.model != "none"
+        requested = getattr(props, "thermal_model", "energy_balance")
+        self.thermal_model: str = "lumped" if has_sorbent else requested
+        T_inj = getattr(props, "injection_temperature", None)
+        self.T_inj: float = float(T_inj) if T_inj is not None else props.reference_temperature
+        self._inj_eos: PengRobinsonH2 | PengRobinsonMixture = (
+            PengRobinsonMixture(
+                composition=self._inj_comp,
+                peneloux=getattr(props, "peneloux", False),
+                volume_translation=getattr(props, "volume_translation", 0.0) or None,
+            )
+            if self._is_multicomponent
+            else self.eos
+        )
+        self._u_old: float = 0.0  # J/kg specific internal energy at the start of the step
+        self._h_old: float = 0.0  # J/kg specific enthalpy of the in-place gas at step start
+        self._h_in_old: float = 0.0  # J/kg specific enthalpy of injected gas at P_old
+        self._T_guess: float | None = None  # warm start for the per-step temperature solve
+
     def pore_volume(self, P: float) -> float:
         """Pore volume [m³] at pressure P."""
         return self.pore_model.volume(P)
@@ -317,6 +356,97 @@ class UHSReservoir0D:
             }
         return PengRobinsonMixture.mole_fractions_from_mass(m_map)
 
+    def _molar_mass(self, eos: PengRobinsonH2 | PengRobinsonMixture) -> float:
+        return eos.molar_mass() if isinstance(eos, PengRobinsonMixture) else M_H2
+
+    def _store_old_energy_state(self, P_old: float, T_old: float) -> None:
+        self._T_guess = None
+        if self.thermal_model != "energy_balance":
+            return
+        M = self._molar_mass(self.eos)
+        self._u_old = internal_energy_molar(T_old, P_old, self.eos) / M
+        self._h_old = enthalpy_molar(T_old, P_old, self.eos) / M
+        self._h_in_old = enthalpy_molar(self.T_inj, P_old, self._inj_eos) / self._molar_mass(
+            self._inj_eos
+        )
+
+    def _energy_balance_temperature(
+        self, P_new: float, T_old: float, m_old: float, dt: float
+    ) -> float:
+        """
+        Solve the control-volume energy balance for T_new at pressure P_new:
+
+            m·u − m_old·u_old = Δm⁺·h̄_in + Δm⁻·h̄ + dt·m·cv·(T_rock − T)/τ,   Δm = m − m_old
+
+        Injected gas enters at ``injection_temperature``; produced gas leaves at
+        the in-place state.  Flow enthalpies h̄ are trapezoidal (old/new state
+        average), which keeps steps that move a large fraction of the inventory
+        accurate.  Implicit wall heat transfer uses the relaxation
+        time τ (``tau_days``).  Using Δm from the inventory makes the balance
+        exact at the converged mass-balance root.
+        """
+        T_rock = self.props.reference_temperature
+        if self.tau_s <= 0.0:
+            return T_rock
+        eos = self.eos
+        M = self._molar_mass(eos)
+        h_in_new = enthalpy_molar(self.T_inj, P_new, self._inj_eos) / self._molar_mass(
+            self._inj_eos
+        )
+        h_in = 0.5 * (self._h_in_old + h_in_new)
+        u_old_total = m_old * self._u_old
+
+        def g(T: float) -> float:
+            m = self.mass_from_state(P_new, T)
+            dm = m - m_old
+            u = internal_energy_molar(T, P_new, eos) / M
+            if dm > 0.0:
+                flow = dm * h_in
+            else:
+                flow = dm * 0.5 * (self._h_old + enthalpy_molar(T, P_new, eos) / M)
+            cv = _real_heat_capacities(T, P_new, eos)[1] / M
+            return m * u - u_old_total - flow - dt * m * cv * (T_rock - T) / self.tau_s
+
+        lo = max(60.0, T_old - 250.0)
+        hi = T_old + 350.0
+        T = self._T_guess if self._T_guess is not None and lo < self._T_guess < hi else T_old
+        g_T = g(T)
+        scale = max(abs(u_old_total), 1.0) * 1.0e-10
+        for _ in range(40):
+            if abs(g_T) <= scale:
+                break
+            if g_T > 0.0:
+                hi = T
+            else:
+                lo = T
+            g_d = g(T + 0.01)
+            slope = (g_d - g_T) / 0.01
+            T_next = T - g_T / slope if slope > 0.0 and math.isfinite(slope) else 0.5 * (lo + hi)
+            if not (lo < T_next < hi):
+                T_next = 0.5 * (lo + hi)
+            if abs(T_next - T) < 1.0e-7:
+                T = T_next
+                break
+            T = T_next
+            g_T = g(T)
+        self._T_guess = T
+        return T
+
+    def _temperature_update(
+        self, P_new: float, P_old: float, T_old: float, m_old: float, dt: float
+    ) -> float:
+        if self.thermal_model == "energy_balance":
+            return self._energy_balance_temperature(P_new, T_old, m_old, dt)
+        return coupled_temperature_update(
+            T_old=T_old,
+            P_old=max(P_old, 1.0),
+            P_new=max(P_new, 1.0),
+            T_geothermal=self.props.reference_temperature,
+            dt_s=dt,
+            tau_s=self.tau_s,
+            eos=self.eos,
+        )
+
     def _step_residual(
         self,
         P_new: float,
@@ -332,15 +462,7 @@ class UHSReservoir0D:
         if comp_info is not None and isinstance(self.eos, PengRobinsonMixture):
             y_old, comp_m_old, w_inj, w_prod = comp_info
             self.eos.set_composition(y_old)
-            T_new = coupled_temperature_update(
-                T_old=T_old,
-                P_old=max(P_old, 1.0),
-                P_new=max(P_new, 1.0),
-                T_geothermal=self.props.reference_temperature,
-                dt_s=dt,
-                tau_s=self.tau_s,
-                eos=self.eos,
-            )
+            T_new = self._temperature_update(P_new, P_old, T_old, m_old, dt)
             q = self._mass_rate_at(P_new, T_new, period)
             y_trial = self._trial_composition(comp_m_old, w_inj, w_prod, q, dt)
             self.eos.set_composition(y_trial)
@@ -350,15 +472,7 @@ class UHSReservoir0D:
             m_new = self.mass_from_state(P_new, T_new)
             return m_new - m_old - q * dt, q, T_new
 
-        T_new = coupled_temperature_update(
-            T_old=T_old,
-            P_old=max(P_old, 1.0),
-            P_new=max(P_new, 1.0),
-            T_geothermal=self.props.reference_temperature,
-            dt_s=dt,
-            tau_s=self.tau_s,
-            eos=self.eos,
-        )
+        T_new = self._temperature_update(P_new, P_old, T_old, m_old, dt)
         q = self._mass_rate_at(P_new, T_new, period)
         m_new = self.mass_from_state(P_new, T_new)
         return m_new - m_old - q * dt, q, T_new
@@ -386,6 +500,7 @@ class UHSReservoir0D:
         if self._is_multicomponent and isinstance(self.eos, PengRobinsonMixture):
             self.eos.set_composition(y_old)
             m_old = self.mass_from_state(P_old, T_old)
+            self._store_old_energy_state(P_old, T_old)
             w_old = self.eos.mass_fractions(y_old)
             comp_m_old = {sp: w * m_old for sp, w in w_old.items()}
             w_inj = self.eos.mass_fractions(self._inj_comp)
@@ -400,6 +515,7 @@ class UHSReservoir0D:
             comp_info = (y_old, comp_m_old, w_inj, w_prod)
         else:
             m_old = self.mass_from_state(P_old, T_old)
+            self._store_old_energy_state(P_old, T_old)
 
         if period.mode == "shut_in":
             lo = max(1.0e3, P_old * 0.5)
@@ -426,6 +542,8 @@ class UHSReservoir0D:
         P_new = 0.5 * (lo + hi)
         q = 0.0
         T_new = T_old
+        widths = [hi - lo, hi - lo]
+        f_hist = [math.inf, math.inf]
         for _ in range(80):
             f, q, T_new = self._step_residual(P_new, P_old, T_old, m_old, period, dt, comp_info)
             if abs(f) <= 1.0e-9 * max(abs(m_old), 1.0):
@@ -439,7 +557,18 @@ class UHSReservoir0D:
                 located = True
                 break
 
-            dP = max(1.0, 1.0e-6 * P_new)
+            # Safeguard: if two Newton steps have neither halved the bracket nor the
+            # residual (the residual has a kink where the well rate saturates at
+            # q_max and Newton creeps), bisect.
+            widths = [widths[1], hi - lo]
+            f_hist = [f_hist[1], abs(f)]
+            if widths[1] > 0.5 * widths[0] and f_hist[1] > 0.5 * f_hist[0]:
+                widths = [hi - lo, hi - lo]
+                f_hist = [math.inf, math.inf]
+                P_new = max(0.5 * (lo + hi), 1.0e3)
+                continue
+
+            dP = min(max(1.0, 1.0e-6 * P_new), 0.25 * (hi - lo))
             f2 = self._step_residual(P_new + dP, P_old, T_old, m_old, period, dt, comp_info)[0]
             slope = (f2 - f) / dP
             if slope > 0.0 and math.isfinite(slope):

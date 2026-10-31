@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.4.0 — 2026-10-31
+
+### 0D energy balance (AUDIT.md §4.8 item 4) — default changed
+- `UHSReservoir0D` now solves a real-gas control-volume energy balance each step:
+  $m u - m_{old} u_{old} = \Delta m^+ \bar h_{in} + \Delta m^- \bar h + \Delta t\, m c_v (T_{rock} - T)/\tau$,
+  with trapezoidal flow enthalpies, injected gas at the new `ReservoirProperties.injection_temperature` (default: reservoir temperature), and implicit wall heat transfer through the existing relaxation time τ.
+- Validated against CoolProp energy-balance integration for an adiabatic 70 000 m³ cavern: fill 40→120 bar +70.5 K vs +70.8 K (the previous lumped model gave +110 K by treating filling as isentropic compression of the whole inventory); discharge 120→40 bar −79.4 K vs −81.2 K at 6-hour steps.
+- `thermal_model="lumped"` restores the previous behaviour; stores with a sorbent keep the lumped model (adsorbed-phase energy is not modelled). Both options are available in JSON/YAML configs.
+- Canonical results: Teesside working gas unchanged; porous-reservoir working gas −1.2 to −1.3 %; Teesside peak temperature 99 → 74 °C.
+
+### Thermodynamics
+- New `enthalpy_molar` / `internal_energy_molar` (Peng-Robinson departure functions, closed-form Shomate ideal-gas enthalpy). For pure H2 the enthalpy uses the same effective translation as `joule_thomson_coefficient`, so $(\partial H/\partial P)_T = -C_p\mu_{JT}$; with Peneloux enabled ΔH and ΔU match CoolProp within ~5 J/mol over 1–200 bar, 290–400 K.
+
+### Numerics
+- 0D step solver: safeguarded Newton now bisects when two iterations halve neither the bracket nor the residual. Steps that start exactly at a BHP target (where the well rate saturates within micro-pascals) previously exhausted 80 iterations without locating the root.
+
 ## v1.3.3 — 2026-10-31
 
 ### Input validation

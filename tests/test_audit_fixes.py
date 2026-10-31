@@ -23,8 +23,11 @@ from h2multisim.models.three_d import (
 from h2multisim.models.two_d import Schedule2D, UHSAreal2D, scenario_single_well
 from h2multisim.models.zero_d import (
     MonteCarloConfig,
+    ReservoirState,
     SchedulePeriod,
+    UHSReservoir0D,
     build_okoroafor_reservoir,
+    build_teesside_cavern,
     run_monte_carlo,
 )
 from h2multisim.thermo import (
@@ -33,7 +36,9 @@ from h2multisim.thermo import (
     RelativePermeabilityModel,
     adiabatic_temperature,
     cp_real_h2,
+    enthalpy_molar,
     gamma_real_h2,
+    internal_energy_molar,
     joule_thomson_coefficient,
     viscosity_h2,
 )
@@ -102,6 +107,63 @@ class TestRealGasThermo(unittest.TestCase):
             with self.subTest(sg=sg):
                 pc = rp.capillary_pressure_Pa(sg)
                 self.assertAlmostEqual(rp.gas_saturation_from_capillary_pressure(pc), sg, places=9)
+
+
+class TestEnergyBalance(unittest.TestCase):
+    def test_enthalpy_and_internal_energy_vs_coolprop(self) -> None:
+        eos = PengRobinsonH2(peneloux=True)
+        # ((T1, P1 [bar]), (T2, P2 [bar]), CoolProp ΔH, ΔU [J/mol])
+        refs = [
+            ((300.0, 1.0), (300.0, 200.0), 207.2, -96.9),
+            ((293.15, 40.0), (400.0, 120.0), 3226.6, 2205.1),
+            ((369.0, 150.0), (300.0, 50.0), -2143.2, -1406.5),
+        ]
+        for (T1, P1), (T2, P2), dh_ref, du_ref in refs:
+            with self.subTest(state1=(T1, P1), state2=(T2, P2)):
+                dh = enthalpy_molar(T2, P2 * 1e5, eos) - enthalpy_molar(T1, P1 * 1e5, eos)
+                du = internal_energy_molar(T2, P2 * 1e5, eos) - internal_energy_molar(
+                    T1, P1 * 1e5, eos
+                )
+                self.assertLess(abs(dh - dh_ref), 25.0)
+                self.assertLess(abs(du - du_ref), 10.0)
+
+    def _cavern_run(self, P1: float, mode: str, bhp_bar: float, thermal_model: str) -> float:
+        props = build_teesside_cavern()
+        props.peneloux = True
+        props.volume_translation = -4.0e-6
+        props.thermal_model = thermal_model
+        model = UHSReservoir0D(props, tau_days=1.0e9)  # adiabatic walls
+        T1 = 293.15
+        state = ReservoirState(P1, T1, model.mass_from_state(P1, T1))
+        sched = [SchedulePeriod("p", mode, 1.0, bar_to_pa(bhp_bar), 15.0)]
+        res = model.run_schedule(state, sched, dt_s=6 * 3600.0)
+        self.assertEqual(res.metrics["converged"], 1.0)
+        i = next(k for k, p in enumerate(res.pressures) if abs(p - bar_to_pa(bhp_bar)) < 1e3)
+        return res.temperatures[i] - T1
+
+    def test_adiabatic_cavern_fill_vs_coolprop(self) -> None:
+        # CoolProp energy-balance integration: 40 -> 120 bar with H2 injected at 293.15 K: +70.83 K.
+        dT = self._cavern_run(bar_to_pa(40.0), "inject", 120.0, "energy_balance")
+        self.assertLess(abs(dT / 70.83 - 1.0), 0.02)
+        # The legacy lumped model treats filling as isentropic compression (+110 K).
+        self.assertGreater(self._cavern_run(bar_to_pa(40.0), "inject", 120.0, "lumped"), 100.0)
+
+    def test_adiabatic_cavern_discharge_vs_coolprop(self) -> None:
+        # Adiabatic discharge leaves the remaining gas on an isentrope: CoolProp -81.16 K.
+        dT = self._cavern_run(bar_to_pa(120.0), "withdraw", 40.0, "energy_balance")
+        self.assertLess(abs(dT / -81.16 - 1.0), 0.03)
+
+    def test_sorbent_store_keeps_lumped_model(self) -> None:
+        from h2multisim.thermo import IsothermModel
+
+        props = build_teesside_cavern()
+        props.m_sorbent = 1000.0
+        props.isotherm = IsothermModel(model="langmuir")
+        self.assertEqual(UHSReservoir0D(props).thermal_model, "lumped")
+        with self.assertRaises(ValueError):
+            build_teesside_cavern().__class__(
+                **{**build_teesside_cavern().__dict__, "thermal_model": "x"}
+            )
 
 
 class TestModeValidation(unittest.TestCase):
