@@ -14,6 +14,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Callable
 
+from h2multisim.models._common import validate_mode
 from h2multisim.thermo import (
     IsothermModel,
     PengRobinsonH2,
@@ -104,6 +105,9 @@ class SchedulePeriod:
     duration_days: float  # days
     bhp_target: float  # Pa (P_max for inject, P_min for withdraw)
     max_mass_rate: float  # kg/s maximum surface rate
+
+    def __post_init__(self) -> None:
+        validate_mode(self.mode, f"schedule period {self.name!r}")
 
 
 # Alias
@@ -208,6 +212,7 @@ class UHSReservoir0D:
             self.pore_model = props.pore_model
 
         self.isotherm = props.isotherm or IsothermModel(model="none")
+        self._last_step_converged: bool = True
 
     def pore_volume(self, P: float) -> float:
         """Pore volume [m³] at pressure P."""
@@ -342,9 +347,13 @@ class UHSReservoir0D:
         Advance the reservoir state by dt [s] with an exact mass balance.
 
         Solving ``m(P_new, T_new) - m_old = q(P_new, T_new)·dt`` removes the
-        explicit linearisation and the old post-hoc BHP clamp: the well rate is
-        the rate that actually changes the inventory, so the reported throughput
-        and the stored mass cannot diverge.
+        explicit linearisation and the old post-hoc BHP clamp.  The returned
+        rate is the step-average rate (m_new − m_old)/dt: when the well hits its
+        BHP target mid-step the instantaneous well rate is effectively
+        discontinuous, and the average rate is the physically meaningful one.
+        Because that makes the run-level mass balance an identity, solver
+        health is tracked separately: ``_last_step_converged`` is False when
+        the root was neither bracketed nor located within tolerance.
         """
         P_old = state.pressure
         T_old = state.temperature
@@ -388,6 +397,8 @@ class UHSReservoir0D:
                 break
             hi *= 2.0
             f_hi = self._step_residual(hi, P_old, T_old, m_old, period, dt, comp_info)[0]
+        converged = f_lo <= 0.0 <= f_hi
+        located = False
 
         P_new = 0.5 * (lo + hi)
         q = 0.0
@@ -395,12 +406,14 @@ class UHSReservoir0D:
         for _ in range(80):
             f, q, T_new = self._step_residual(P_new, P_old, T_old, m_old, period, dt, comp_info)
             if abs(f) <= 1.0e-9 * max(abs(m_old), 1.0):
+                located = True
                 break
             if f > 0.0:
                 hi = P_new
             else:
                 lo = P_new
             if hi - lo <= 1.0e-7 * max(P_new, 1.0):
+                located = True
                 break
 
             dP = max(1.0, 1.0e-6 * P_new)
@@ -420,6 +433,7 @@ class UHSReservoir0D:
             y_new = dict(self.eos.composition)
         m_new = self.mass_from_state(P_new, T_new)
         q_report = (m_new - m_old) / dt if dt > 0.0 else 0.0
+        self._last_step_converged = converged and located
 
         return (
             ReservoirState(pressure=P_new, temperature=T_new, mass=m_new, composition=y_new),
@@ -452,6 +466,7 @@ class UHSReservoir0D:
         m_min = m0
         inj_kg = 0.0
         wdr_kg = 0.0
+        unconverged_steps = 0
 
         y_cur = y0
         y_h2_init = y_cur.get("H2", 1.0)
@@ -472,6 +487,8 @@ class UHSReservoir0D:
             dt_act = period.duration_days * 86400.0 / n_steps
             for _ in range(n_steps):
                 new_state, q = self.step(state, period, dt_act)
+                if not self._last_step_converged:
+                    unconverged_steps += 1
                 t += dt_act
 
                 if q >= 0.0:
@@ -503,6 +520,8 @@ class UHSReservoir0D:
         wg = m_max - m_min
         eff = wg / m_max * 100.0 if m_max > 0.0 else 0.0
         net_kg = inj_kg - wdr_kg
+        # Bookkeeping check only: step rates are inventory-derived, so this is ~0 by
+        # construction.  Solver health is reported by ``converged``.
         mb_err = abs((state.mass - m0) - net_kg) / max(abs(net_kg), 1.0)
         y_final = normalize_composition(state.composition or self._init_comp)
         if wdr_kg <= 0.0:
@@ -523,6 +542,8 @@ class UHSReservoir0D:
             "cycled_gas_kg": inj_kg + wdr_kg,
             "cycle_balance_kg": net_kg,
             "mass_balance_error": mb_err,
+            "unconverged_steps": float(unconverged_steps),
+            "converged": 1.0 if unconverged_steps == 0 else 0.0,
             "final_pressure_Pa": state.pressure,
             "final_temperature_K": state.temperature,
             "final_mass_kg": state.mass,
@@ -703,10 +724,13 @@ def run_monte_carlo(
         T_g = max(250.0, rng.gauss(mc_cfg.geothermal_T_mean, mc_cfg.geothermal_T_std))
         A = max(1.0e4, rng.gauss(mc_cfg.area_mean, mc_cfg.area_std))
         re = base_props.drainage_radius if base_props.is_cavern else math.sqrt(A / math.pi)
+        sat_factor = (
+            base_props.rel_perm or RelativePermeabilityModel(swr=base_props.swr, sgc=base_props.sgc)
+        ).effective_porosity_factor()
         pm = (
             PoreVolumeModel(
                 model=base_props.pore_model.model,
-                V0=A * h * phi,
+                V0=A * h * phi * sat_factor,
                 P0=base_props.pore_model.P0,
                 total_compressibility=base_props.pore_model.total_compressibility,
                 P_gate=base_props.pore_model.P_gate,
@@ -738,6 +762,9 @@ def run_monte_carlo(
             initial_composition=base_props.initial_composition,
             injected_composition=base_props.injected_composition,
             plume_segregation=base_props.plume_segregation,
+            swr=base_props.swr,
+            sgc=base_props.sgc,
+            rel_perm=base_props.rel_perm,
         )
 
         model = UHSReservoir0D(
