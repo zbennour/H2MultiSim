@@ -10,16 +10,20 @@ implicit upwind advection–dispersion scheme in advective form (as in
 
 from __future__ import annotations
 
+from typing import Any
+
 from h2multisim.thermo import (
     GAS_COMPONENTS,
     M_H2,
     PengRobinsonMixture,
+    cp_real_h2,
+    gas_heat_capacity_fraction,
     isentropic_exponent,
     viscosity_h2,
 )
 
 
-def validate_cushion_props(props: object, where: str) -> None:
+def validate_cushion_props(props: Any, where: str) -> None:
     """Normalise ``props.cushion_gas`` and check ``initial_h2_mole_fraction``."""
     cg = str(props.cushion_gas).strip().upper()
     if cg not in GAS_COMPONENTS:
@@ -34,6 +38,10 @@ def validate_cushion_props(props: object, where: str) -> None:
 
 class BinaryCompositionMixin:
     """Composition-aware cell properties; requires ``self.eos`` and ``self.props``."""
+
+    props: Any  # provided by the host model
+    eos: Any
+    rel_perm: Any
 
     def _init_composition(self) -> None:
         props = self.props
@@ -77,6 +85,24 @@ class BinaryCompositionMixin:
             return isentropic_exponent(T, P, self.eos)
         self._mix_eos.set_composition(self._comp_at(y_val))
         return isentropic_exponent(T, P, self._mix_eos)
+
+    def _thermal_exponent(self, T: float, P: float, y_val: float) -> float:
+        """
+        Isentropic exponent of the pore gas scaled by its share of the local heat
+        capacity (gas + connate water + rock in local thermal equilibrium).
+        """
+        n = self._exponent(T, P, y_val)
+        eos = self._mix_eos if self._is_multicomponent else self.eos
+        M = eos.molar_mass() if self._is_multicomponent else M_H2
+        cp_mass = cp_real_h2(T, P, eos) / M
+        f = gas_heat_capacity_fraction(
+            self._rho(P, T, y_val),
+            cp_mass,
+            self.props.phi,
+            self.rel_perm.effective_porosity_factor(),
+            self.props.rock_heat_capacity,
+        )
+        return n * f
 
     def _w_from_y(self, y: float) -> float:
         """H2 mass fraction from H2 mole fraction."""

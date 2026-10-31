@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.10.0 — 2026-10-31
+
+### Rock heat capacity in porous media (thermal physics fix)
+- Porous-reservoir temperatures ignored the heat capacity of the rock. In 0D, and per cell in 1D/2D/3D, compression heated only the pore gas, which then relaxed to geothermal over τ ≈ 30 days. The canonical Rough case heated from 96 to 138 °C and Okoroafor from 43 to 69 °C. With local thermal equilibrium between pore gas and grains, rock (~2.2 MJ/m³K) and connate water absorb almost all of the compression work, and real porous stores stay within a few kelvin of geothermal away from the wellbore.
+- 0D: the energy balance gains a rock + connate-water storage term `C_s·(T − T_old)` for porous media, and the τ relaxation acts on gas + rock. Caverns are unchanged (their walls act through τ).
+- 1D/2D/3D: each cell's isentropic exponent is scaled by the gas share of the local heat capacity, `gas_heat_capacity_fraction(...)`.
+- New `rock_heat_capacity` property (J/m³K of rock solids; default 2.2e6 for porous media, 0 for caverns; also in configs). Setting it to 0 restores the previous gas-only behaviour.
+- Effects: porous temperature swings drop to < 1 K, and working gas rises because the gas is no longer artificially hot at the pressure cap (0D Okoroafor +4.2 %, Rough +2.7 %; 1D Okoroafor injection +6.5 %). Cavern results are identical. The 2D golden values were re-captured.
+
+
+### Examples & docs
+- New `examples/05_cushion_gas_mixing_2d.py` (H2 into a CH4-filled depleted field: produced purity, energy, plume) and `examples/06_cushion_gas_3d.json` (3D N2 cushion, bottom-perforated well).
+- `tests/test_examples.py` runs every example script and config, so examples cannot silently break.
+- README documents `--json`, `--quiet`, `--fixed-dt`, `verify`, the optional physics config keys and an example index.
+
+### Packaging & tooling (AUDIT.md §4.10)
+- Ships `py.typed` (PEP 561) with the `Typing :: Typed` classifier; the package type-checks cleanly with `mypy --check-untyped-defs`, now run in the CI lint job. Fixed the 11 issues mypy found (mixin attribute declarations, the `IsothermModel` EOS type, a CLI variable re-typed mid-function).
+- `.pre-commit-config.yaml` (ruff, ruff-format, mypy) and `SECURITY.md` (private vulnerability reporting).
+
 ## v1.9.0 — 2026-10-31
 
 ### 0D adaptive time stepping (AUDIT.md §4.9)

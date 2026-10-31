@@ -188,6 +188,9 @@ def _props_0d(d: dict[str, Any]) -> ReservoirProperties:
         sgc=float(d.get("sgc", 0.0)),
         rel_perm=rel_perm,
         thermal_model=str(d.get("thermal_model", "energy_balance")),
+        rock_heat_capacity=(
+            float(d["rock_heat_capacity"]) if d.get("rock_heat_capacity") is not None else None
+        ),
         injection_temperature=(
             float(d["injection_temperature"])
             if d.get("injection_temperature") is not None
@@ -224,6 +227,7 @@ def _props_1d(d: dict[str, Any]) -> RadialReservoirProps:
         swr=float(d.get("swr", 0.0)),
         sgc=float(d.get("sgc", 0.0)),
         rel_perm=_rel_perm(d),
+        rock_heat_capacity=float(d.get("rock_heat_capacity", 2.2e6)),
     )
 
 
@@ -254,6 +258,7 @@ def _props_2d(d: dict[str, Any]) -> Reservoir2DProps:
         swr=float(d.get("swr", 0.0)),
         sgc=float(d.get("sgc", 0.0)),
         rel_perm=_rel_perm(d),
+        rock_heat_capacity=float(d.get("rock_heat_capacity", 2.2e6)),
         cushion_gas=str(d.get("cushion_gas", "H2")),
         initial_h2_mole_fraction=(
             float(d["initial_h2_mole_fraction"])
@@ -293,6 +298,7 @@ def _props_3d(d: dict[str, Any]) -> Reservoir3DProps:
         swr=float(d.get("swr", 0.0)),
         sgc=float(d.get("sgc", 0.0)),
         rel_perm=_rel_perm(d),
+        rock_heat_capacity=float(d.get("rock_heat_capacity", 2.2e6)),
         cushion_gas=str(d.get("cushion_gas", "H2")),
         initial_h2_mole_fraction=(
             float(d["initial_h2_mole_fraction"])

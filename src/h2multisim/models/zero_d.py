@@ -17,6 +17,8 @@ from typing import Callable
 from h2multisim.models._common import check_inputs, validate_mode
 from h2multisim.thermo import (
     M_H2,
+    ROCK_HEAT_CAPACITY_DEFAULT,
+    WATER_HEAT_CAPACITY,
     IsothermModel,
     PengRobinsonH2,
     PengRobinsonMixture,
@@ -86,6 +88,8 @@ class ReservoirProperties:
     # (rate m·cv·(T_rock − T)/τ); 'lumped': legacy isentropic update + exponential relaxation.
     thermal_model: str = "energy_balance"
     injection_temperature: float | None = None  # K wellhead/injected gas T (None -> reference)
+    # J/(m³·K) of rock solids; None -> 2.2e6 for porous media, 0 for caverns (walls via tau).
+    rock_heat_capacity: float | None = None
 
     def __post_init__(self) -> None:
         if self.thermal_model not in ("energy_balance", "lumped"):
@@ -97,6 +101,10 @@ class ReservoirProperties:
             check_inputs(
                 "ReservoirProperties",
                 positive={"injection_temperature": self.injection_temperature},
+            )
+        if self.rock_heat_capacity is not None:
+            check_inputs(
+                "ReservoirProperties", non_negative={"rock_heat_capacity": self.rock_heat_capacity}
             )
         check_inputs(
             "ReservoirProperties",
@@ -274,6 +282,20 @@ class UHSReservoir0D:
             if self._is_multicomponent
             else self.eos
         )
+        # Heat capacity [J/K] of rock solids and connate water in local thermal equilibrium
+        # with the pore gas (porous media only; cavern walls act through tau).
+        if props.is_cavern:
+            self.C_solid: float = 0.0
+        else:
+            rho_c = (
+                props.rock_heat_capacity
+                if props.rock_heat_capacity is not None
+                else ROCK_HEAT_CAPACITY_DEFAULT
+            )
+            s_g = self.rel_perm.effective_porosity_factor()
+            self.C_solid = self.V_bulk * (
+                (1.0 - props.porosity) * rho_c + props.porosity * (1.0 - s_g) * WATER_HEAT_CAPACITY
+            )
         self._u_old: float = 0.0  # J/kg specific internal energy at the start of the step
         self._h_old: float = 0.0  # J/kg specific enthalpy of the in-place gas at step start
         self._h_in_old: float = 0.0  # J/kg specific enthalpy of injected gas at P_old
@@ -379,7 +401,7 @@ class UHSReservoir0D:
         """
         Solve the control-volume energy balance for T_new at pressure P_new:
 
-            m·u − m_old·u_old = Δm⁺·h̄_in + Δm⁻·h̄ + dt·m·cv·(T_rock − T)/τ,   Δm = m − m_old
+            m·u − m_old·u_old + C_s·(T − T_old) = Δm⁺·h̄_in + Δm⁻·h̄ + dt·(m·cv + C_s)·(T_rock − T)/τ
 
         Injected gas enters at ``injection_temperature``; produced gas leaves at
         the in-place state.  Flow enthalpies h̄ are trapezoidal (old/new state
@@ -408,7 +430,14 @@ class UHSReservoir0D:
             else:
                 flow = dm * 0.5 * (self._h_old + enthalpy_molar(T, P_new, eos) / M)
             cv = _real_heat_capacities(T, P_new, eos)[1] / M
-            return m * u - u_old_total - flow - dt * m * cv * (T_rock - T) / self.tau_s
+            C_s = self.C_solid
+            return (
+                m * u
+                - u_old_total
+                + C_s * (T - T_old)
+                - flow
+                - dt * (m * cv + C_s) * (T_rock - T) / self.tau_s
+            )
 
         lo = max(60.0, T_old - 250.0)
         hi = T_old + 350.0

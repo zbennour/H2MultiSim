@@ -18,6 +18,8 @@ jobs:
         run: |
           uvx ruff check .
           uvx ruff format --check .
+      - name: Type check (mypy)
+        run: uvx --with pyyaml mypy
 
   test:
     name: Test (Python ${{ matrix.python-version }} on ${{ matrix.os }})

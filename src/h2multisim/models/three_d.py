@@ -64,6 +64,7 @@ class Reservoir3DProps:
     rel_perm: RelativePermeabilityModel | None = (
         None  # Optional two-phase relative permeability model
     )
+    rock_heat_capacity: float = 2.2e6  # J/(m³·K) rock solids, local thermal equilibrium with gas
     cushion_gas: str = "H2"  # Native cushion gas species ('H2', 'CH4', 'CO2', 'N2')
     initial_h2_mole_fraction: float | None = None  # None -> 1.0 if cushion is H2 else 0.0
     dispersivity_m: float = 0.5  # m longitudinal mechanical dispersivity α_L
@@ -86,6 +87,7 @@ class Reservoir3DProps:
             non_negative={
                 "Ct": self.Ct,
                 "tau_days": self.tau_days,
+                "rock_heat_capacity": self.rock_heat_capacity,
                 "dispersivity_m": self.dispersivity_m,
                 "molecular_diffusivity_m2_s": self.molecular_diffusivity_m2_s,
             },
@@ -851,7 +853,10 @@ class UHSFieldScale3D(BinaryCompositionMixin):
         # Isentropic exponent at the start-of-step state, reused by every Picard iteration.
         self._n_exp = [
             [
-                [self._exponent(T_old[i][j][k], P_old[i][j][k], self.y[i][j][k]) for k in range(nz)]
+                [
+                    self._thermal_exponent(T_old[i][j][k], P_old[i][j][k], self.y[i][j][k])
+                    for k in range(nz)
+                ]
                 for j in range(ny)
             ]
             for i in range(nx)

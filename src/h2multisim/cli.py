@@ -313,10 +313,11 @@ def _run_export_deck(args: argparse.Namespace) -> int:
             out_dir = cfg_out_dir
             os.makedirs(out_dir, exist_ok=True)
     else:
-        scale = getattr(args, "scale", None)
-        if not scale:
+        scale_arg: str | None = getattr(args, "scale", None)
+        if not scale_arg:
             print("Error: --scale is required unless --config is given", file=sys.stderr)
             return 2
+        scale = scale_arg
         props = None
         wells = None
         sched = None

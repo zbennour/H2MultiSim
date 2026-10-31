@@ -142,19 +142,19 @@ OPM Flow has no single-phase gas mode (decks declaring only `GAS` stop with *"No
 - Producer rate caps go to the `WCONPROD` GRAT item; a `SUMMARY` section requests `FPR`, `FGIP`, `FGIT`, `FGPT`, `WBHP`, `WGIR`, `WGPR`.
 - The decks are isothermal; H2MultiSim's adiabatic/relaxation thermal model has no deck counterpart.
 
-### Cross-simulator results (OPM Flow 2026.04, H2MultiSim v1.8.0, reproducible via `audit/bench_opm.py`)
+### Cross-simulator results (OPM Flow 2026.04, H2MultiSim v1.10.0, reproducible via `audit/bench_opm.py`)
 
 Each canonical scenario is exported, run in OPM Flow with its time step capped at H2MultiSim's $\Delta t$, and compared at every OPM report time. "dGIP" is the error in the change of gas in place (OPM: cumulative injection − production), normalised by the largest inventory swing; "P" is the error in pore-volume-average pressure (`FPR`, uniform Cartesian grids only).
 
 | Scenario | H2MultiSim isothermal: max dGIP err | max P err | H2MultiSim thermal: max dGIP err | max P err |
 | :--- | ---: | ---: | ---: | ---: |
-| 1D Okoroafor (radial, 40 cells) | **0.40 %** | – | 12.7 % | – |
-| 2D single well (15×15) | **0.71 %** | **0.010 %** | 6.3 % | 0.35 % |
-| 2D five-spot (15×15) | **1.18 %** | **0.052 %** | 8.6 % | 0.51 % |
-| 3D gravity override (8×8×5) | **0.19 %** | **0.001 %** | 2.9 % | 0.14 % |
-| 3D layered reservoir (8×8×5) | **0.49 %** | **0.032 %** | 7.0 % | 1.52 % |
+| 1D Okoroafor (radial, 40 cells) | **0.40 %** | – | 0.48 % | – |
+| 2D single well (15×15) | **0.71 %** | **0.010 %** | 0.74 % | 0.009 % |
+| 2D five-spot (15×15) | **1.18 %** | **0.052 %** | 1.25 % | 0.048 % |
+| 3D gravity override (8×8×5) | **0.19 %** | **0.001 %** | 0.21 % | 0.002 % |
+| 3D layered reservoir (8×8×5) | **0.49 %** | **0.032 %** | 0.54 % | 0.027 % |
 
-With matched physics (isothermal) the two simulators agree to ≤ 1.2 % in stored-gas change and ≤ 0.05 % in average pressure. The "thermal" columns are not errors: they measure how much H2MultiSim's compression heating / expansion cooling changes deliverability relative to an isothermal simulator. With OPM's default adaptive stepping (steps up to tens of days), the isothermal dGIP gap grows to 1–9 %, which is OPM's own time-discretisation error on these fast transients.
+With matched physics (isothermal) the two simulators agree to ≤ 1.2 % in stored-gas change and ≤ 0.05 % in average pressure. The "thermal" columns use H2MultiSim's default thermal model. Since v1.10.0 that model includes the rock and connate-water heat capacity, so porous reservoirs stay within ~1 K of geothermal and also agree with the isothermal decks to ≤ 1.25 %. Before v1.10.0 the gas-only thermal model heated porous reservoirs by tens of kelvin and differed by 3–13 %, which was a modelling error rather than real physics. With OPM's default adaptive stepping (steps up to tens of days), the isothermal gap grows to 1–9 %, which is OPM's own time-discretisation error on these fast transients.
 
 ### Exporting Input Decks via CLI
 

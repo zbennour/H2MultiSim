@@ -20,7 +20,10 @@ from h2multisim.thermo import (
     PengRobinsonMixture,
     RelativePermeabilityModel,
     coupled_temperature_update,
+    cp_real_h2,
+    gas_heat_capacity_fraction,
     heating_values_mass,
+    isentropic_exponent,
     viscosity_h2,
 )
 from h2multisim.units import (
@@ -62,6 +65,7 @@ class RadialReservoirProps:
     rel_perm: RelativePermeabilityModel | None = (
         None  # Optional two-phase relative permeability model
     )
+    rock_heat_capacity: float = 2.2e6  # J/(m³·K) rock solids, local thermal equilibrium with gas
 
     def __post_init__(self) -> None:
         check_inputs(
@@ -76,6 +80,7 @@ class RadialReservoirProps:
             non_negative={
                 "Ct": self.Ct,
                 "tau_days": self.tau_days,
+                "rock_heat_capacity": self.rock_heat_capacity,
                 "dispersivity_m": self.dispersivity_m,
                 "molecular_diffusivity_m2_s": self.molecular_diffusivity_m2_s,
             },
@@ -270,9 +275,19 @@ class UHSRadial1D:
         self, T_old: float, P_old: float, P_new: float, dt: float, y_val: float
     ) -> float:
         eos: PengRobinsonH2 | PengRobinsonMixture = self.eos
+        M = M_H2
         if self._is_multicomponent:
             self._mix_eos.set_composition(self._comp_at(y_val))
             eos = self._mix_eos
+            M = self._mix_eos.molar_mass()
+        # Compression work is shared with connate water and rock (local thermal equilibrium).
+        f_gas = gas_heat_capacity_fraction(
+            self._cell_density(max(P_old, 1.0), T_old, y_val),
+            cp_real_h2(T_old, max(P_old, 1.0), eos) / M,
+            self.props.phi,
+            self.rel_perm.effective_porosity_factor(),
+            self.props.rock_heat_capacity,
+        )
         return coupled_temperature_update(
             T_old=T_old,
             P_old=max(P_old, 1.0),
@@ -281,6 +296,7 @@ class UHSRadial1D:
             dt_s=dt,
             tau_s=self.tau_s,
             eos=eos,
+            exponent=isentropic_exponent(T_old, max(P_old, 1.0), eos) * f_gas,
         )
 
     def _cell_drho_dP(self, P_val: float, T_val: float, y_val: float = 1.0) -> float:
