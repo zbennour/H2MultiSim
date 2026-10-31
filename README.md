@@ -5,7 +5,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 90/90 Passed](https://img.shields.io/badge/tests-90%2F90%20passed-brightgreen.svg)](tests/)
+[![Tests: 96/96 Passed](https://img.shields.io/badge/tests-96%2F96%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
@@ -88,6 +88,23 @@ accept either pascals or strings such as `"80 bar"`; permeability can be given i
 via `permeability_mD`. This removes the need to edit Python source to study a new
 reservoir.
 
+Optional physics keys include `cushion_gas` (`"CH4"`, `"CO2"`, `"N2"`) with
+`initial_h2_mole_fraction`, `dispersivity_m` and `molecular_diffusivity_m2_s` for H2–cushion
+mixing (1D/2D/3D), `rock_heat_capacity` (J/m³K), `peneloux`, `swr`/`rel_perm`, and for 0D
+`thermal_model` and `injection_temperature`. `examples/06_cushion_gas_3d.json` is a 3D
+N2-cushion case with a bottom-perforated well.
+
+| Example | What it shows |
+|---|---|
+| `01_quickstart_0d_cavern.py` | 0D Teesside salt cavern cycling |
+| `02_radial_nearwell_transient.py` | 1D radial near-well transient |
+| `03_five_spot_sweep.py` | 2D five-spot well interference |
+| `04_config_driven_2d.json` | Config-driven 2D run |
+| `05_cushion_gas_mixing_2d.py` | H2 into a CH4-filled depleted field: produced purity, energy, plume |
+| `06_cushion_gas_3d.json` | 3D N2 cushion with gravity override |
+
+All examples are executed by the test suite (`tests/test_examples.py`).
+
 H2MultiSim™ uses only the Python standard library for simulation and has zero external runtime dependencies.
 
 ```powershell
@@ -125,13 +142,21 @@ py -m h2multisim run --scale 2d --scenario thief_zone
 # Run 3D Field-scale gravity segregation simulation
 py -m h2multisim run --scale 3d --scenario gravity_override
 
+# Machine-readable metrics (JSON to stdout or a file), quiet mode, fixed 0D stepping
+py -m h2multisim run --scale 0d --scenario teesside --json -
+py -m h2multisim run --config examples/06_cushion_gas_3d.json --json results/metrics.json --quiet
+py -m h2multisim run --scale 0d --scenario teesside --fixed-dt
+
+# Check the thermodynamic core against embedded CoolProp references (non-zero exit on failure)
+py -m h2multisim verify
+
 # Export standard ECLIPSE 100/300 & OPM Flow (.DATA) input decks
 py -m h2multisim export-deck --scale 1d --scenario okoroafor
 py -m h2multisim export-deck --scale 2d --scenario five_spot
 py -m h2multisim export-deck --scale 3d --scenario layered_reservoir
 py -m h2multisim export-deck --config simulations/custom_reservoir.json
 
-# Run complete 40-test verification test suite
+# Run the test suite (from a source checkout)
 py -m h2multisim test
 ```
 
@@ -165,6 +190,7 @@ state = ReservoirState(
 result = model.run_schedule(state, schedule, dt_s=86400.0)
 
 print(f"Working Gas: {result.metrics['working_gas_kg'] / 1e3:.1f} tonnes")
+print(f"Working Gas Energy: {result.metrics['working_gas_energy_GWh_LHV']:.2f} GWh (LHV)")
 print(f"Max Pressure: {pa_to_bar(result.metrics['max_pressure_Pa']):.1f} bar")
 ```
 

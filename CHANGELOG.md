@@ -10,6 +10,11 @@
 - Effects: porous temperature swings drop to < 1 K, and working gas rises because the gas is no longer artificially hot at the pressure cap (0D Okoroafor +4.2 %, Rough +2.7 %; 1D Okoroafor injection +6.5 %). Cavern results are identical. The 2D golden values were re-captured.
 
 
+### Examples & docs
+- New `examples/05_cushion_gas_mixing_2d.py` (H2 into a CH4-filled depleted field: produced purity, energy, plume) and `examples/06_cushion_gas_3d.json` (3D N2 cushion, bottom-perforated well).
+- `tests/test_examples.py` runs every example script and config, so examples cannot silently break.
+- README documents `--json`, `--quiet`, `--fixed-dt`, `verify`, the optional physics config keys and an example index.
+
 ### Packaging & tooling (AUDIT.md §4.10)
 - Ships `py.typed` (PEP 561) with the `Typing :: Typed` classifier; the package type-checks cleanly with `mypy --check-untyped-defs`, now run in the CI lint job. Fixed the 11 issues mypy found (mixin attribute declarations, the `IsothermModel` EOS type, a CLI variable re-typed mid-function).
 - `.pre-commit-config.yaml` (ruff, ruff-format, mypy) and `SECURITY.md` (private vulnerability reporting).

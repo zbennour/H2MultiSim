@@ -1,0 +1,21 @@
+{
+  "scale": "3d",
+  "reservoir": {
+    "Lx": 600.0, "Ly": 600.0, "Lz": 30.0,
+    "phi": 0.20, "permeability_mD": 200.0, "Ct": 5.0e-10,
+    "P_init": "80 bar", "T_init": 330.0,
+    "nx": 5, "ny": 5, "nz": 5,
+    "cushion_gas": "N2", "initial_h2_mole_fraction": 0.0,
+    "dispersivity_m": 1.0, "rock_heat_capacity": 2.2e6
+  },
+  "wells": [
+    {"i": 2, "j": 2, "k_min": 0, "k_max": 1, "name": "INJ_BOTTOM"}
+  ],
+  "schedule": [
+    {"name": "inject", "mode": "inject", "duration_days": 30.0, "bhp_target": "100 bar", "q_max": 20.0},
+    {"name": "rest", "mode": "shut_in", "duration_days": 10.0, "bhp_target": "0 bar", "q_max": 0.0},
+    {"name": "withdraw", "mode": "withdraw", "duration_days": 20.0, "bhp_target": "65 bar", "q_max": 20.0}
+  ],
+  "dt_days": 2.0,
+  "out_dir": "output"
+}
