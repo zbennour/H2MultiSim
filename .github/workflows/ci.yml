@@ -36,3 +36,52 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       - name: Run test suite
         run: uv run --python ${{ matrix.python-version }} --extra dev pytest -v --cov=h2multisim --cov-report=term-missing
+
+  package:
+    name: Build, install & smoke run
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Install wheel into a clean environment and run the CLI
+        run: |
+          uv venv /tmp/smoke --python 3.12
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          cd /tmp
+          /tmp/smoke/bin/h2multisim --version
+          /tmp/smoke/bin/h2multisim run --scale 0d --scenario okoroafor --dt-days 30 --out-dir /tmp/smoke-out
+          test -s /tmp/smoke-out/0d_okoroafor_timeseries.csv
+
+  opm-decks:
+    name: Exported decks run in OPM Flow
+    needs: lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install OPM Flow (OPM PPA)
+        run: |
+          sudo add-apt-repository -y ppa:opm/ppa
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopm-simulators-bin
+          flow --version
+      - name: Export every canonical deck and run it
+        run: |
+          set -e
+          mkdir -p decks
+          for spec in "1d okoroafor" "1d rough" "2d single_well" "2d five_spot" "2d thief_zone" \
+                      "3d single_well_3d" "3d gravity_override" "3d layered_reservoir"; do
+            set -- $spec
+            name="$1_$2"
+            uv run python -m h2multisim export-deck --scale "$1" --scenario "$2" --out-file "decks/$name.DATA"
+            flow "decks/$name.DATA" --output-dir="decks/out_$name" > "decks/$name.log" 2>&1 \
+              || { tail -50 "decks/$name.log"; exit 1; }
+            name_upper=$(echo "$name" | tr '[:lower:]' '[:upper:]')
+            test -s "decks/out_$name/$name_upper.UNSMRY"
+            echo "$name: OK"
+          done

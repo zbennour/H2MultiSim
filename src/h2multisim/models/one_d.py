@@ -12,7 +12,7 @@ import math
 import os
 from dataclasses import dataclass, field
 
-from h2multisim.models._common import validate_mode
+from h2multisim.models._common import check_inputs, validate_mode
 from h2multisim.thermo import (
     GAS_COMPONENTS,
     M_H2,
@@ -62,6 +62,31 @@ class RadialReservoirProps:
     )
 
     def __post_init__(self) -> None:
+        check_inputs(
+            "RadialReservoirProps",
+            positive={
+                "r_well": self.r_well,
+                "h": self.h,
+                "k": self.k,
+                "P_init": self.P_init,
+                "T_init": self.T_init,
+            },
+            non_negative={
+                "Ct": self.Ct,
+                "tau_days": self.tau_days,
+                "dispersivity_m": self.dispersivity_m,
+                "molecular_diffusivity_m2_s": self.molecular_diffusivity_m2_s,
+            },
+            fraction={"phi": self.phi},
+        )
+        if not self.r_ext > self.r_well:
+            raise ValueError(
+                f"RadialReservoirProps: r_ext ({self.r_ext}) must exceed r_well ({self.r_well})"
+            )
+        if self.outer_bc not in ("no_flow", "const_pressure"):
+            raise ValueError(
+                f"RadialReservoirProps: outer_bc must be 'no_flow' or 'const_pressure', got {self.outer_bc!r}"
+            )
         if self.peneloux and self.volume_translation == 0.0:
             self.volume_translation = -4.0e-6
 
@@ -81,6 +106,11 @@ class WellControl:
 
     def __post_init__(self) -> None:
         validate_mode(self.mode, f"well control {self.name!r}")
+        check_inputs(
+            f"well control {self.name!r}",
+            positive={"duration_d": self.duration_d},
+            non_negative={"bhp_target": self.bhp_target, "q_max": self.q_max},
+        )
 
 
 SchedulePeriod1D = WellControl
