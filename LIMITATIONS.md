@@ -7,7 +7,7 @@ This page states what H2MultiSim models, what it does not, and the measured accu
 | | 0D lumped | 1D radial | 2D areal | 3D field |
 |---|---|---|---|---|
 | Flow | Material balance + Darcy well productivity | Implicit FV, log grid | Implicit FV, Cartesian | Implicit FV, Cartesian, gravity |
-| Gas composition | H2/CH4/CO2/N2 well-mixed, optional plume segregation | Binary H2 + one cushion gas, advection–dispersion | Binary H2 + one cushion gas, advection–dispersion | Single gas |
+| Gas composition | H2/CH4/CO2/N2 well-mixed, optional plume segregation | Binary H2 + one cushion gas, advection–dispersion | Binary H2 + one cushion gas, advection–dispersion | Binary H2 + one cushion gas, advection–dispersion with gravity |
 | Thermal | Real-gas energy balance (injected enthalpy, wall heat transfer) | Per-cell isentropic update + relaxation | Same as 1D | Same as 1D |
 | Pressure solver | Safeguarded Newton on the mass-balance root | Thomas (tridiagonal) | PCG (or SOR) | PCG (or SOR) |
 

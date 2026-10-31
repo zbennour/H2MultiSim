@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.7.0 — 2026-10-31
+
+### 3D cushion-gas mixing
+- `Reservoir3DProps` gains `cushion_gas`, `initial_h2_mole_fraction`, `dispersivity_m` and `molecular_diffusivity_m2_s` (also in configs). `UHSFieldScale3D` transports a per-cell H2 mole fraction with implicit upwind advection–dispersion. Vertical fluxes include gravity, so light H2 over-rides denser cushion gas; a lock-exchange test checks H2 tonguing along the top and N2 slumping along the bottom.
+- Composition is coupled into the Picard loop with the same Anderson acceleration as 2D. On an N2-cushion gravity-override cycle: converged, mass-balance error 3.5e-8, H2 species balance exact.
+- Hydrostatic initialisation uses the initial cushion-gas density. Multi-layer wells report the produced H2 mole fraction (molar rate-weighted over producing perforations), and withdrawn energy is summed per perforation at each layer's composition.
+- New outputs: `per_well_h2_mole_fraction`, `Snapshot3D.h2_mole_fraction`, purity metrics, `transport_unconverged_solves`. 3D deck exports warn when a non-H2 cushion gas is modelled.
+
+### Refactor
+- Composition machinery shared by 2D and 3D moved to `models/_composition.py` (`BinaryCompositionMixin`, `solve_binary_transport`). 2D results are unchanged; single-gas 2D/3D runs keep the previous code path (bit-identical results).
+
 ## v1.6.0 — 2026-10-31
 
 ### Energy metrics (AUDIT.md §4.10)
