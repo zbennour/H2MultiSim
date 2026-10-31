@@ -63,10 +63,16 @@ class PengRobinsonH2:
     """
 
     def __init__(
-        self, max_iter: int = 50, tol: float = 1e-10, volume_translation: float = 0.0
+        self,
+        max_iter: int = 50,
+        tol: float = 1e-10,
+        volume_translation: float = 0.0,
+        peneloux: bool = False,
     ) -> None:
         self.max_iter: int = max_iter
         self.tol: float = tol
+        if peneloux and volume_translation == 0.0:
+            volume_translation = -4.0e-6
         self.volume_translation: float = float(volume_translation)  # m³/mol Peneloux c
         self.ac: float = 0.45724 * R_UNIVERSAL**2 * T_C**2 / P_C
         self.b: float = 0.07780 * R_UNIVERSAL * T_C / P_C
@@ -209,6 +215,10 @@ class PengRobinsonH2:
         """Dynamic viscosity [Pa·s] using NIST-calibrated Chapman-Enskog + Muzny."""
         return viscosity_h2(T, P, eos=self)
 
+    def cp_ideal(self, T: float) -> float:
+        """Ideal-gas molar heat capacity Cp°(T) [J/(mol·K)]."""
+        return cp_ideal_h2(T)
+
 
 # ── Ideal-gas heat capacity ──────────────────────────────────────────────────
 def cp_ideal_h2(T: float) -> float:
@@ -228,7 +238,9 @@ def cp_specific_ideal_h2(T: float) -> float:
 
 
 # ── Real-gas specific heat ratio γ(T, P) ─────────────────────────────────────
-def gamma_real_h2(T: float, P: float, eos: PengRobinsonH2 | None = None) -> float:
+def gamma_real_h2(
+    T: float, P: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None
+) -> float:
     """
     Real-gas heat capacity ratio γ = Cp / Cv at temperature T [K] and pressure P [Pa].
     Combines Shomate ideal capacity with PR-EOS departure function.
@@ -265,12 +277,15 @@ def gamma_real_h2(T: float, P: float, eos: PengRobinsonH2 | None = None) -> floa
         else 0.0
     )
 
-    Cp = max(cp_ideal_h2(T_val) + delta_Cp, 14.0)
+    cp0 = eos.cp_ideal(T_val) if hasattr(eos, "cp_ideal") else cp_ideal_h2(T_val)
+    Cp = max(cp0 + delta_Cp, 14.0)
     Cv = max(Cp - Cp_Cv, 8.0)
     return float(min(max(Cp / Cv, 1.10), 1.80))
 
 
-def cp_real_h2(T: float, P: float, eos: PengRobinsonH2 | None = None) -> float:
+def cp_real_h2(
+    T: float, P: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None
+) -> float:
     """
     Real-gas isobaric molar heat capacity Cp [J/(mol·K)] at (T, P).
 
@@ -293,12 +308,16 @@ def cp_real_h2(T: float, P: float, eos: PengRobinsonH2 | None = None) -> float:
         if abs(den) > 1e-20 and num / den > 0.0
         else 0.0
     )
-    return float(max(cp_ideal_h2(T_val) + delta_Cp, 14.0))
+    cp0 = eos.cp_ideal(T_val) if hasattr(eos, "cp_ideal") else cp_ideal_h2(T_val)
+    return float(max(cp0 + delta_Cp, 14.0))
 
 
-def cp_specific_real_h2(T: float, P: float, eos: PengRobinsonH2 | None = None) -> float:
+def cp_specific_real_h2(
+    T: float, P: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None
+) -> float:
     """Real-gas isobaric specific heat capacity cp [J/(kg·K)] at (T, P)."""
-    return cp_real_h2(T, P, eos) / M_H2
+    M = eos.molar_mass() if isinstance(eos, PengRobinsonMixture) else M_H2
+    return cp_real_h2(T, P, eos) / M
 
 
 # ── Viscosity ────────────────────────────────────────────────────────────────
@@ -312,16 +331,18 @@ def viscosity_h2(
     T: float,
     P: float,
     rho: float | None = None,
-    eos: PengRobinsonH2 | None = None,
+    eos: PengRobinsonH2 | PengRobinsonMixture | None = None,
 ) -> float:
     """
-    Dynamic viscosity of pure hydrogen [Pa·s] at (T, P).
+    Dynamic viscosity of pure hydrogen (or gas mixture if PengRobinsonMixture is provided) [Pa·s].
 
     Combines the dilute-gas Chapman-Enskog collision-integral formulation with the
     Muzny et al. (2013) / NIST density-dependent dense fluid residual correction:
         μ(T, P) = μ₀(T) + c₁·ρ + c₂·ρ²
     Matches NIST reference data (CoolProp HEOS) within <1.5% across 250–450 K and 1–350 bar.
     """
+    if isinstance(eos, PengRobinsonMixture) and not eos.is_pure_h2():
+        return eos.viscosity(P, T, rho=rho)
     T_val = max(float(T), 50.0)
     P_val = max(float(P), 1.0)
     M_g = M_H2 * 1000.0  # g/mol
@@ -506,6 +527,678 @@ class IsothermModel:
         raise ValueError(
             f"Unknown isotherm model: {self.model!r}. Choose 'none', 'langmuir', or 'dsl'."
         )
+
+
+# ── Multicomponent Gas Mixture Thermodynamics (H2 / CH4 / CO2 / N2) ──────────
+M_AIR: float = 28.9647e-3  # kg/mol dry air molar mass
+T_STD_METRIC: float = 288.15  # K (15 °C metric standard temperature)
+P_STD_METRIC: float = 101325.0  # Pa (1.01325 bar metric standard pressure)
+V_MOLAR_STD: float = R_UNIVERSAL * T_STD_METRIC / P_STD_METRIC  # ~0.0236445 sm³/mol
+
+
+@dataclass(frozen=True)
+class GasComponentSpec:
+    """Thermophysical specification for a pure subsurface gas component."""
+
+    name: str
+    molar_mass: float  # kg/mol
+    T_c: float  # K critical temperature
+    P_c: float  # Pa critical pressure
+    omega: float  # Pitzer acentric factor
+    c_peneloux: float  # m³/mol default Peneloux volume translation
+    lj_sigma: float  # Å Lennard-Jones collision diameter
+    lj_eps_kb: float  # K Lennard-Jones well depth (ε/kB)
+    hhv_molar: float  # J/mol Higher Heating Value at 298.15 K
+    lhv_molar: float  # J/mol Lower Heating Value at 298.15 K
+    cp_ideal_298: float  # J/(mol·K) reference ideal-gas molar heat capacity
+    mu_res_c1: float  # Pa·s / (kg/m³) linear dense-fluid viscosity residual
+    mu_res_c2: float  # Pa·s / (kg/m³)² quadratic dense-fluid viscosity residual
+
+    @property
+    def ac(self) -> float:
+        return 0.45724 * R_UNIVERSAL**2 * self.T_c**2 / self.P_c
+
+    @property
+    def b(self) -> float:
+        return 0.07780 * R_UNIVERSAL * self.T_c / self.P_c
+
+    @property
+    def kappa(self) -> float:
+        return 0.37464 + 1.54226 * self.omega - 0.26992 * self.omega**2
+
+    def alpha(self, T: float) -> float:
+        Tr = max(float(T), T_FLOOR) / self.T_c
+        return (1.0 + self.kappa * (1.0 - math.sqrt(Tr))) ** 2
+
+    def a_T(self, T: float) -> float:
+        return self.ac * self.alpha(T)
+
+
+GAS_COMPONENTS: dict[str, GasComponentSpec] = {
+    "H2": GasComponentSpec(
+        name="H2",
+        molar_mass=M_H2,
+        T_c=T_C,
+        P_c=P_C,
+        omega=OMEGA,
+        c_peneloux=-4.0e-6,
+        lj_sigma=LJ_SIGMA,
+        lj_eps_kb=LJ_EPS_KB,
+        hhv_molar=285830.0,
+        lhv_molar=241820.0,
+        cp_ideal_298=28.84,
+        mu_res_c1=_MU_RESIDUAL_C1,
+        mu_res_c2=_MU_RESIDUAL_C2,
+    ),
+    "CH4": GasComponentSpec(
+        name="CH4",
+        molar_mass=16.0425e-3,
+        T_c=190.564,
+        P_c=4.5992e6,
+        omega=0.01142,
+        c_peneloux=-5.2e-6,
+        lj_sigma=3.758,
+        lj_eps_kb=148.6,
+        hhv_molar=890580.0,
+        lhv_molar=802340.0,
+        cp_ideal_298=35.69,
+        mu_res_c1=2.8e-8,
+        mu_res_c2=1.5e-10,
+    ),
+    "CO2": GasComponentSpec(
+        name="CO2",
+        molar_mass=44.0095e-3,
+        T_c=304.128,
+        P_c=7.3773e6,
+        omega=0.22394,
+        c_peneloux=-1.7e-6,
+        lj_sigma=3.941,
+        lj_eps_kb=195.2,
+        hhv_molar=0.0,
+        lhv_molar=0.0,
+        cp_ideal_298=37.11,
+        mu_res_c1=3.5e-8,
+        mu_res_c2=1.2e-10,
+    ),
+    "N2": GasComponentSpec(
+        name="N2",
+        molar_mass=28.0134e-3,
+        T_c=126.192,
+        P_c=3.3958e6,
+        omega=0.03720,
+        c_peneloux=-4.2e-6,
+        lj_sigma=3.798,
+        lj_eps_kb=71.4,
+        hhv_molar=0.0,
+        lhv_molar=0.0,
+        cp_ideal_298=29.12,
+        mu_res_c1=1.8e-8,
+        mu_res_c2=1.0e-10,
+    ),
+}
+
+# Symmetric binary interaction parameters k_ij (Qian et al. 2013; Hassanpouryouzband et al. 2020)
+BINARY_K_IJ: dict[tuple[str, str], float] = {
+    ("H2", "CH4"): 0.0156,
+    ("CH4", "H2"): 0.0156,
+    ("H2", "CO2"): -0.0500,
+    ("CO2", "H2"): -0.0500,
+    ("H2", "N2"): 0.1030,
+    ("N2", "H2"): 0.1030,
+    ("CH4", "CO2"): 0.0919,
+    ("CO2", "CH4"): 0.0919,
+    ("CH4", "N2"): 0.0311,
+    ("N2", "CH4"): 0.0311,
+    ("CO2", "N2"): -0.0170,
+    ("N2", "CO2"): -0.0170,
+}
+
+
+def normalize_composition(comp: dict[str, float] | None) -> dict[str, float]:
+    """Normalize a mole-fraction dictionary over GAS_COMPONENTS to sum to 1.0."""
+    if not comp:
+        return {"H2": 1.0}
+    cleaned: dict[str, float] = {}
+    total = 0.0
+    for k, v in comp.items():
+        key = k.strip().upper()
+        if key not in GAS_COMPONENTS:
+            raise ValueError(f"Unknown gas component {k!r}. Supported: {', '.join(GAS_COMPONENTS)}")
+        val = max(float(v), 0.0)
+        if val > 0.0:
+            cleaned[key] = cleaned.get(key, 0.0) + val
+            total += val
+    if total <= 0.0:
+        return {"H2": 1.0}
+    return {k: v / total for k, v in cleaned.items()}
+
+
+class PengRobinsonMixture:
+    """
+    Multicomponent Peng-Robinson Equation of State for subsurface gas mixtures
+    (H2, CH4, CO2, N2) using van der Waals one-fluid mixing rules, Peneloux
+    molar volume translation, and Wilke + dense-fluid residual viscosity.
+
+    Fully duck-type compatible with :class:`PengRobinsonH2` so any 0D, 1D, 2D,
+    or 3D solver can accept a ``PengRobinsonMixture`` instance directly.
+    """
+
+    def __init__(
+        self,
+        composition: dict[str, float] | None = None,
+        peneloux: bool = False,
+        volume_translation: float | None = None,
+        k_ij_overrides: dict[tuple[str, str], float] | None = None,
+        max_iter: int = 50,
+        tol: float = 1e-10,
+    ) -> None:
+        self.max_iter = max_iter
+        self.tol = tol
+        self.peneloux = bool(peneloux)
+        self._explicit_vt = volume_translation
+        self._k_ij = dict(BINARY_K_IJ)
+        if k_ij_overrides:
+            for (c1, c2), val in k_ij_overrides.items():
+                u1, u2 = c1.upper(), c2.upper()
+                self._k_ij[(u1, u2)] = float(val)
+                self._k_ij[(u2, u1)] = float(val)
+        self.ac: float = 1.0
+        self.composition: dict[str, float] = {"H2": 1.0}
+        self.set_composition(composition)
+
+    def set_composition(self, composition: dict[str, float] | None) -> None:
+        """Update active mole-fraction composition (normalized to sum to 1.0)."""
+        self.composition = normalize_composition(composition)
+
+    def is_pure_h2(self, composition: dict[str, float] | None = None) -> bool:
+        comp = normalize_composition(composition) if composition is not None else self.composition
+        return len(comp) == 1 and comp.get("H2", 0.0) >= 1.0 - 1e-12
+
+    def _get_comp(self, composition: dict[str, float] | None) -> dict[str, float]:
+        return normalize_composition(composition) if composition is not None else self.composition
+
+    @property
+    def b(self) -> float:
+        """Mixture covolume b_mix [m³/mol] for current composition."""
+        return self._b_mix(self.composition)
+
+    @property
+    def volume_translation(self) -> float:
+        """Mixture Peneloux volume translation c_mix [m³/mol]."""
+        return self._c_mix(self.composition)
+
+    def _b_mix(self, comp: dict[str, float]) -> float:
+        return sum(y * GAS_COMPONENTS[sp].b for sp, y in comp.items())
+
+    def _c_mix(self, comp: dict[str, float]) -> float:
+        if self._explicit_vt is not None:
+            return float(self._explicit_vt)
+        if not self.peneloux:
+            return 0.0
+        return sum(y * GAS_COMPONENTS[sp].c_peneloux for sp, y in comp.items())
+
+    def _a_mix(self, T: float, comp: dict[str, float]) -> float:
+        T_eff = max(float(T), T_FLOOR)
+        species = list(comp.items())
+        a_pure = {sp: GAS_COMPONENTS[sp].a_T(T_eff) for sp, _ in species}
+        a_val = 0.0
+        for sp_i, y_i in species:
+            for sp_j, y_j in species:
+                k_ij = 0.0 if sp_i == sp_j else self._k_ij.get((sp_i, sp_j), 0.0)
+                a_val += y_i * y_j * math.sqrt(a_pure[sp_i] * a_pure[sp_j]) * (1.0 - k_ij)
+        return a_val
+
+    def _alpha(self, T: float) -> float:
+        """Compatibility hook for departure functions (ac * _alpha(T) == a_mix(T))."""
+        return self._a_mix(T, self.composition)
+
+    def d2a_dT2(self, T: float, composition: dict[str, float] | None = None) -> float:
+        """Second temperature derivative of mixture attraction parameter d²a_mix/dT²."""
+        comp = self._get_comp(composition)
+        if len(comp) == 1 and "H2" in comp:
+            T_eff = max(float(T), T_FLOOR)
+            Tr = T_eff / T_C
+            sqTr = math.sqrt(Tr)
+            spec = GAS_COMPONENTS["H2"]
+            return spec.ac * spec.kappa * (1.0 + spec.kappa) / (2.0 * Tr * sqTr) / T_C**2
+        T_eff = max(float(T), T_FLOOR)
+        dT = max(T_eff * 1e-4, 0.01)
+        a_hi = self._a_mix(T_eff + dT, comp)
+        a_0 = self._a_mix(T_eff, comp)
+        a_lo = self._a_mix(max(T_eff - dT, T_FLOOR), comp)
+        return (a_hi - 2.0 * a_0 + a_lo) / (dT**2)
+
+    def molar_mass(self, composition: dict[str, float] | None = None) -> float:
+        """Mixture molar mass M_mix [kg/mol]."""
+        comp = self._get_comp(composition)
+        return sum(y * GAS_COMPONENTS[sp].molar_mass for sp, y in comp.items())
+
+    def mass_fractions(self, composition: dict[str, float] | None = None) -> dict[str, float]:
+        """Convert mole fractions to mass fractions w_i [-]."""
+        comp = self._get_comp(composition)
+        M_mix = self.molar_mass(comp)
+        return {sp: y * GAS_COMPONENTS[sp].molar_mass / M_mix for sp, y in comp.items()}
+
+    @staticmethod
+    def mole_fractions_from_mass(mass_comp: dict[str, float]) -> dict[str, float]:
+        """Convert mass fractions (or component masses [kg]) to normalized mole fractions y_i [-]."""
+        moles: dict[str, float] = {}
+        for sp, m_val in mass_comp.items():
+            key = sp.strip().upper()
+            if key not in GAS_COMPONENTS:
+                raise ValueError(f"Unknown gas component {sp!r}")
+            if m_val > 0.0:
+                moles[key] = moles.get(key, 0.0) + float(m_val) / GAS_COMPONENTS[key].molar_mass
+        return normalize_composition(moles)
+
+    def cp_ideal(self, T: float, composition: dict[str, float] | None = None) -> float:
+        """Mixture ideal-gas molar heat capacity Cp°_mix(T) [J/(mol·K)]."""
+        comp = self._get_comp(composition)
+        T_val = max(float(T), T_FLOOR)
+        cp_val = 0.0
+        for sp, y in comp.items():
+            if sp == "H2":
+                cp_val += y * cp_ideal_h2(T_val)
+            else:
+                spec = GAS_COMPONENTS[sp]
+                # Smooth temperature scaling around 298.15 K for CH4/CO2/N2
+                cp_sp = spec.cp_ideal_298 * (1.0 + 0.00045 * (T_val - 298.15))
+                cp_val += y * max(cp_sp, 20.0)
+        return cp_val
+
+    def z_factor(self, P: float, T: float, composition: dict[str, float] | None = None) -> float:
+        """Mixture compressibility factor Z = P·Vm / (R·T)."""
+        if P <= 0.0 or T <= 0.0:
+            return 1.0
+        comp = self._get_comp(composition)
+        T_eff = max(float(T), T_FLOOR)
+        a_mix = self._a_mix(T_eff, comp)
+        b_mix = self._b_mix(comp)
+        A = a_mix * P / (R_UNIVERSAL**2 * T_eff**2)
+        B = b_mix * P / (R_UNIVERSAL * T_eff)
+        if not (math.isfinite(A) and math.isfinite(B)):
+            return 1.0
+
+        c2 = -(1.0 - B)
+        c1 = A - 3.0 * B**2 - 2.0 * B
+        c0 = -(A * B - B**2 - B**3)
+
+        roots = cubic_real_roots(c2, c1, c0)
+        gas_roots = [r for r in roots if r > B + 1e-6 and r > 0.05 and math.isfinite(r)]
+        Z = max(gas_roots) if gas_roots else max((r for r in roots if r > 0.0), default=1.0)
+
+        for _ in range(self.max_iter):
+            f = Z**3 + c2 * Z**2 + c1 * Z + c0
+            df = 3.0 * Z**2 + 2.0 * c2 * Z + c1
+            if abs(df) < 1e-20:
+                break
+            dZ = -f / df
+            Z += dZ
+            if abs(dZ) < self.tol:
+                break
+
+        c_mix = self._c_mix(comp)
+        if c_mix != 0.0:
+            Z = Z - c_mix * P / (R_UNIVERSAL * T_eff)
+
+        return float(max(Z, 1e-4))
+
+    def density(self, P: float, T: float, composition: dict[str, float] | None = None) -> float:
+        """Mixture gas density [kg/m³]: ρ = P·M_mix / (Z·R·T)."""
+        P_val = max(float(P), 1.0)
+        T_val = max(float(T), T_FLOOR)
+        comp = self._get_comp(composition)
+        Z = self.z_factor(P_val, T_val, comp)
+        M_mix = self.molar_mass(comp)
+        return P_val * M_mix / (Z * R_UNIVERSAL * T_val)
+
+    def molar_volume(
+        self, P: float, T: float, composition: dict[str, float] | None = None
+    ) -> float:
+        """Mixture molar volume Vm [m³/mol]: Vm = Z·R·T / P."""
+        P_val = max(float(P), 1.0)
+        T_val = max(float(T), T_FLOOR)
+        Z = self.z_factor(P_val, T_val, composition)
+        return Z * R_UNIVERSAL * T_val / P_val
+
+    def drho_dP(self, P: float, T: float, composition: dict[str, float] | None = None) -> float:
+        """Isothermal derivative (∂ρ/∂P)_T,y [kg/(m³·Pa)]."""
+        P_val = max(float(P), 1.0)
+        T_val = max(float(T), T_FLOOR)
+        comp = self._get_comp(composition)
+        dP = max(P_val * 1.0e-6, 1.0)
+        P_lo = max(P_val - dP, 1.0)
+        P_hi = P_val + dP
+        return (self.density(P_hi, T_val, comp) - self.density(P_lo, T_val, comp)) / (P_hi - P_lo)
+
+    def isothermal_compressibility(
+        self, P: float, T: float, composition: dict[str, float] | None = None
+    ) -> float:
+        """Isothermal gas compressibility cg = (1/ρ)·(∂ρ/∂P)_T [Pa⁻¹]."""
+        P_val = max(float(P), 1.0)
+        T_val = max(float(T), T_FLOOR)
+        comp = self._get_comp(composition)
+        rho = self.density(P_val, T_val, comp)
+        return self.drho_dP(P_val, T_val, comp) / max(rho, 1e-12)
+
+    def component_fugacity_coefficients(
+        self, P: float, T: float, composition: dict[str, float] | None = None
+    ) -> dict[str, float]:
+        """Component fugacity coefficients φ̂_i = f̂_i / (y_i·P) in the mixture."""
+        P_val = max(float(P), 1.0)
+        T_val = max(float(T), T_FLOOR)
+        comp = self._get_comp(composition)
+        Z = self.z_factor(P_val, T_val, comp)
+        c_mix = self._c_mix(comp)
+        Z_pr = Z + c_mix * P_val / (R_UNIVERSAL * T_val)
+
+        a_mix = self._a_mix(T_val, comp)
+        b_mix = self._b_mix(comp)
+        A = a_mix * P_val / (R_UNIVERSAL**2 * T_val**2)
+        B = b_mix * P_val / (R_UNIVERSAL * T_val)
+        s2 = math.sqrt(2.0)
+
+        species = list(comp.keys())
+        a_pure = {sp: GAS_COMPONENTS[sp].a_T(T_val) for sp in species}
+        log_term = math.log(max((Z_pr + (1.0 + s2) * B) / max(Z_pr + (1.0 - s2) * B, 1e-12), 1e-12))
+
+        phi_hat: dict[str, float] = {}
+        for sp_i in species:
+            spec_i = GAS_COMPONENTS[sp_i]
+            b_ratio = spec_i.b / max(b_mix, 1e-20)
+            sum_aij = 0.0
+            for sp_j, y_j in comp.items():
+                k_ij = 0.0 if sp_i == sp_j else self._k_ij.get((sp_i, sp_j), 0.0)
+                sum_aij += y_j * math.sqrt(a_pure[sp_i] * a_pure[sp_j]) * (1.0 - k_ij)
+            ln_phi = (
+                b_ratio * (Z_pr - 1.0)
+                - math.log(max(Z_pr - B, 1e-12))
+                - (A / (2.0 * s2 * max(B, 1e-12)))
+                * (2.0 * sum_aij / max(a_mix, 1e-30) - b_ratio)
+                * log_term
+            )
+            c_i = (
+                float(self._explicit_vt)
+                if self._explicit_vt is not None
+                else (spec_i.c_peneloux if self.peneloux else 0.0)
+            )
+            if c_i != 0.0:
+                ln_phi -= c_i * P_val / (R_UNIVERSAL * T_val)
+            phi_hat[sp_i] = math.exp(max(-50.0, min(50.0, ln_phi)))
+        return phi_hat
+
+    def fugacity_coefficient(self, P: float, T: float) -> float:
+        """Effective mixture fugacity coefficient (or H2 fugacity coefficient)."""
+        phis = self.component_fugacity_coefficients(P, T)
+        return phis.get("H2", next(iter(phis.values())))
+
+    def fugacity(self, P: float, T: float) -> float:
+        """Hydrogen partial fugacity f̂_H2 = y_H2 · P · φ̂_H2 [Pa] for adsorption."""
+        P_val = max(float(P), 1.0)
+        phis = self.component_fugacity_coefficients(P_val, T)
+        y_h2 = self.composition.get("H2", 0.0)
+        return y_h2 * P_val * phis.get("H2", 1.0)
+
+    def viscosity(
+        self,
+        P: float,
+        T: float,
+        rho: float | None = None,
+        composition: dict[str, float] | None = None,
+    ) -> float:
+        """
+        Mixture dynamic viscosity [Pa·s] at (P, T) via Wilke (1950) dilute-gas
+        mixing rule + mass-weighted dense-fluid residual correction.
+        """
+        T_val = max(float(T), T_FLOOR)
+        P_val = max(float(P), 1.0)
+        comp = self._get_comp(composition)
+
+        species = list(comp.items())
+        mu0_pure: dict[str, float] = {}
+        for sp, _ in species:
+            spec = GAS_COMPONENTS[sp]
+            M_g = spec.molar_mass * 1000.0
+            T_star = T_val / spec.lj_eps_kb
+            omega_v = (
+                1.16145 / T_star**0.14874
+                + 0.52487 / math.exp(0.7732 * T_star)
+                + 2.16178 / math.exp(2.43787 * T_star)
+            )
+            mu0_pure[sp] = (
+                2.6693e-6 * math.sqrt(M_g * T_val) / (spec.lj_sigma**2 * max(omega_v, 1e-6))
+            )
+
+        # Wilke mixing rule for dilute gas mixture
+        mu0_mix = 0.0
+        for sp_i, y_i in species:
+            M_i = GAS_COMPONENTS[sp_i].molar_mass
+            mu_i = mu0_pure[sp_i]
+            denom = 0.0
+            for sp_j, y_j in species:
+                if sp_i == sp_j:
+                    phi_ij = 1.0
+                else:
+                    M_j = GAS_COMPONENTS[sp_j].molar_mass
+                    mu_j = mu0_pure[sp_j]
+                    num_ij = (1.0 + math.sqrt(mu_i / mu_j) * (M_j / M_i) ** 0.25) ** 2
+                    phi_ij = num_ij / math.sqrt(8.0 * (1.0 + M_i / M_j))
+                denom += y_j * phi_ij
+            mu0_mix += y_i * mu_i / max(denom, 1e-12)
+
+        rho_val = max(float(rho), 0.0) if rho is not None else self.density(P_val, T_val, comp)
+        w_map = self.mass_fractions(comp)
+        c1_mix = sum(w * GAS_COMPONENTS[sp].mu_res_c1 for sp, w in w_map.items())
+        c2_mix = sum(w * GAS_COMPONENTS[sp].mu_res_c2 for sp, w in w_map.items())
+        mu = mu0_mix + c1_mix * rho_val + c2_mix * (rho_val**2)
+        return float(min(max(mu, 6.0e-6), 8.0e-5))
+
+    def heating_values_volumetric(
+        self, composition: dict[str, float] | None = None
+    ) -> tuple[float, float]:
+        """
+        Return volumetric (HHV, LHV) in [MJ/sm³] at metric standard conditions
+        (1.01325 bar, 15 °C).
+        """
+        comp = self._get_comp(composition)
+        hhv_mol = sum(y * GAS_COMPONENTS[sp].hhv_molar for sp, y in comp.items())
+        lhv_mol = sum(y * GAS_COMPONENTS[sp].lhv_molar for sp, y in comp.items())
+        hhv_vol = (hhv_mol / V_MOLAR_STD) * 1.0e-6
+        lhv_vol = (lhv_mol / V_MOLAR_STD) * 1.0e-6
+        return float(hhv_vol), float(lhv_vol)
+
+    def specific_gravity(self, composition: dict[str, float] | None = None) -> float:
+        """Gas specific gravity relative to dry air G_s = M_mix / M_air [-]."""
+        return self.molar_mass(composition) / M_AIR
+
+    def wobbe_index(self, composition: dict[str, float] | None = None) -> float:
+        """Upper Wobbe Index WI = HHV_vol / sqrt(G_s) [MJ/sm³]."""
+        comp = self._get_comp(composition)
+        hhv_vol, _ = self.heating_values_volumetric(comp)
+        gs = max(self.specific_gravity(comp), 1e-12)
+        return float(hhv_vol / math.sqrt(gs))
+
+
+# ── Two-Phase Aquifer Rock-Fluid Physics (Direction 3) ───────────────────────
+
+
+@dataclass
+class RelativePermeabilityModel:
+    """
+    Two-phase gas-brine relative permeability, capillary pressure, and
+    Buckley-Leverett fractional flow model for aquifer/depleted-reservoir UHS.
+
+    Supports:
+    - ``"corey"``: Power-law Corey (1954) relative permeability curves
+        k_rg(S_g) = k_rg,max * S_ge^(n_g),   k_rw(S_w) = k_rw,max * S_we^(n_w)
+    - ``"brooks_corey"``: Brooks-Corey (1964) pore-size distribution model with
+        drainage capillary pressure P_c(S_g) = P_e * S_we^(-1/λ).
+
+    When ``krg_max`` is ``None`` (default), the endpoint gas relative
+    permeability at connate water saturation ``S_g = 1 - swr`` defaults to the
+    water-wet reduction ``(1 - swr) ** n_g`` (which equals ``1.0`` for ``swr = 0``).
+    """
+
+    model: str = "corey"  # 'corey' | 'brooks_corey'
+    swr: float = 0.0  # [-] connate / immobile residual water saturation S_wr in [0, 0.95)
+    sgc: float = 0.0  # [-] critical / trapped gas saturation S_gc in [0, 1 - S_wr)
+    krg_max: float | None = None  # [-] endpoint k_rg at S_g = 1 - S_wr
+    krw_max: float = 1.0  # [-] endpoint k_rw at S_w = 1 - S_gc
+    n_g: float = 2.0  # [-] Corey gas exponent (> 0)
+    n_w: float = 3.0  # [-] Corey water exponent (> 0)
+    brooks_corey_lambda: float = 2.0  # [-] Brooks-Corey pore-size distribution index λ
+    entry_pressure_Pa: float = 5.0e3  # [Pa] capillary entry pressure P_e
+    active_gas_saturation: float | None = None  # [-] operating gas saturation S_g (None -> 1 - swr)
+
+    def __post_init__(self) -> None:
+        self.model = self.model.strip().lower()
+        if self.model not in ("corey", "brooks_corey"):
+            raise ValueError(
+                f"Unknown relative permeability model {self.model!r}. "
+                "Choose 'corey' or 'brooks_corey'."
+            )
+        if not (0.0 <= self.swr < 0.95):
+            raise ValueError(f"swr must be in [0.0, 0.95), got {self.swr}")
+        if not (0.0 <= self.sgc < 1.0 - self.swr):
+            raise ValueError(f"sgc must be in [0.0, 1 - swr), got {self.sgc}")
+        if self.n_g <= 0.0 or self.n_w <= 0.0:
+            raise ValueError("Corey exponents n_g and n_w must be positive")
+        if self.brooks_corey_lambda <= 0.0:
+            raise ValueError("brooks_corey_lambda must be positive")
+
+    @property
+    def endpoint_krg(self) -> float:
+        """Effective endpoint k_rg,max at S_g = 1 - S_wr."""
+        if self.krg_max is not None:
+            return min(max(float(self.krg_max), 0.0), 1.0)
+        return float((1.0 - self.swr) ** self.n_g)
+
+    def effective_gas_saturation(self, S_g: float) -> float:
+        """Normalized mobile gas saturation S_ge in [0, 1]."""
+        denom = max(1.0 - self.swr - self.sgc, 1e-12)
+        return min(max((float(S_g) - self.sgc) / denom, 0.0), 1.0)
+
+    def effective_water_saturation(self, S_w: float) -> float:
+        """Normalized mobile water saturation S_we in [0, 1]."""
+        denom = max(1.0 - self.swr - self.sgc, 1e-12)
+        return min(max((float(S_w) - self.swr) / denom, 0.0), 1.0)
+
+    def krg(self, S_g: float | None = None) -> float:
+        """Gas relative permeability k_rg(S_g) in [0, 1]."""
+        sg_val = (
+            float(S_g)
+            if S_g is not None
+            else (
+                float(self.active_gas_saturation)
+                if self.active_gas_saturation is not None
+                else (1.0 - self.swr)
+            )
+        )
+        s_ge = self.effective_gas_saturation(sg_val)
+        if s_ge <= 0.0:
+            return 0.0
+        k_max = self.endpoint_krg
+        if self.model == "brooks_corey":
+            s_we = 1.0 - s_ge
+            lam = self.brooks_corey_lambda
+            val = k_max * ((1.0 - s_we) ** 2) * (1.0 - s_we ** ((2.0 + lam) / lam))
+            return float(min(max(val, 0.0), 1.0))
+        return float(min(max(k_max * (s_ge**self.n_g), 0.0), 1.0))
+
+    def krw(self, S_w: float | None = None) -> float:
+        """Water/brine relative permeability k_rw(S_w) in [0, 1]."""
+        sw_val = float(S_w) if S_w is not None else self.swr
+        s_we = self.effective_water_saturation(sw_val)
+        if s_we <= 0.0:
+            return 0.0
+        if self.model == "brooks_corey":
+            lam = self.brooks_corey_lambda
+            val = self.krw_max * (s_we ** ((2.0 + 3.0 * lam) / lam))
+            return float(min(max(val, 0.0), 1.0))
+        return float(min(max(self.krw_max * (s_we**self.n_w), 0.0), 1.0))
+
+    def capillary_pressure_Pa(self, S_g: float | None = None) -> float:
+        """Brooks-Corey drainage capillary pressure P_c(S_g) = P_g - P_w [Pa]."""
+        sg_val = float(S_g) if S_g is not None else (1.0 - self.swr)
+        s_we = max(1.0 - self.effective_gas_saturation(sg_val), 0.01)
+        return float(self.entry_pressure_Pa * (s_we ** (-1.0 / self.brooks_corey_lambda)))
+
+    def gas_saturation_from_capillary_pressure(self, P_c: float) -> float:
+        """Inverse Brooks-Corey equilibrium gas saturation S_g(P_c) in [0, 1 - S_wr]."""
+        if P_c <= self.entry_pressure_Pa or self.entry_pressure_Pa <= 0.0:
+            return 0.0
+        s_we = (self.entry_pressure_Pa / float(P_c)) ** self.brooks_corey_lambda
+        s_we = min(max(s_we, 0.0), 1.0)
+        return float((1.0 - self.swr) * (1.0 - s_we))
+
+    def fractional_flow_gas(
+        self,
+        S_g: float,
+        mu_g: float = 9.0e-6,
+        mu_w: float = 8.0e-4,
+    ) -> float:
+        """Buckley-Leverett gas fractional flow f_g(S_g) [-]."""
+        lam_g = self.krg(S_g) / max(float(mu_g), 1e-12)
+        lam_w = self.krw(1.0 - float(S_g)) / max(float(mu_w), 1e-12)
+        denom = lam_g + lam_w
+        if denom <= 0.0:
+            return 0.0
+        return float(lam_g / denom)
+
+    def dfg_dSg(
+        self,
+        S_g: float,
+        mu_g: float = 9.0e-6,
+        mu_w: float = 8.0e-4,
+    ) -> float:
+        """Derivative df_g/dS_g [-] for Buckley-Leverett frontal advance speed."""
+        sg_min = self.sgc
+        sg_max = 1.0 - self.swr
+        if S_g <= sg_min or S_g >= sg_max:
+            return 0.0
+        ds = max((sg_max - sg_min) * 1.0e-5, 1.0e-6)
+        s_lo = max(S_g - ds, sg_min)
+        s_hi = min(S_g + ds, sg_max)
+        if s_hi <= s_lo:
+            return 0.0
+        return (
+            self.fractional_flow_gas(s_hi, mu_g, mu_w) - self.fractional_flow_gas(s_lo, mu_g, mu_w)
+        ) / (s_hi - s_lo)
+
+    def buckley_leverett_front(
+        self,
+        mu_g: float = 9.0e-6,
+        mu_w: float = 8.0e-4,
+        n_samples: int = 200,
+    ) -> tuple[float, float]:
+        """
+        Welge tangent construction for hydrogen drainage into a brine aquifer
+        (initial S_g = 0). Returns ``(S_g_front, dfg_dSg_front)``.
+        """
+        sg_max = 1.0 - self.swr
+        if sg_max <= self.sgc + 1e-9:
+            return self.sgc, 0.0
+        best_sg = sg_max
+        best_secant = 0.0
+        n_pts = max(int(n_samples), 20)
+        for idx in range(1, n_pts + 1):
+            sg = self.sgc + (sg_max - self.sgc) * (idx / n_pts)
+            fg = self.fractional_flow_gas(sg, mu_g, mu_w)
+            secant = fg / max(sg, 1e-12)
+            if secant >= best_secant:
+                best_secant = secant
+                best_sg = sg
+        return float(best_sg), float(best_secant)
+
+    def effective_porosity_factor(self) -> float:
+        """Fraction of pore volume occupied by the gas phase (1 - S_wr)."""
+        if self.active_gas_saturation is not None:
+            return min(max(float(self.active_gas_saturation), 0.0), 1.0 - self.swr)
+        return max(1.0 - self.swr, 0.0)
+
+    def effective_permeability_factor(self, S_g: float | None = None) -> float:
+        """Effective gas relative permeability multiplier k_rg(S_g) in [0, 1]."""
+        return self.krg(S_g)
 
 
 # ── NIST Benchmarking Self-Test ──────────────────────────────────────────────

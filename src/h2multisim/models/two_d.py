@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from h2multisim.thermo import (
     PengRobinsonH2,
+    RelativePermeabilityModel,
     coupled_temperature_update,
     viscosity_h2,
 )
@@ -47,6 +48,11 @@ class Reservoir2DProps:
     k_field: list[list[float]] | None = None
     volume_translation: float = 0.0  # m³/mol Peneloux volume translation (e.g. -4.0e-6)
     peneloux: bool = False  # If True and volume_translation == 0, sets volume_translation = -4.0e-6
+    swr: float = 0.0  # [-] connate / residual immobile water saturation S_wr
+    sgc: float = 0.0  # [-] critical / trapped gas saturation S_gc
+    rel_perm: RelativePermeabilityModel | None = (
+        None  # Optional two-phase relative permeability model
+    )
 
     def __post_init__(self) -> None:
         if self.peneloux and self.volume_translation == 0.0:
@@ -158,7 +164,15 @@ class UHSAreal2D:
         self.xs = [(i + 0.5) * self.dx for i in range(self.nx)]
         self.ys = [(j + 0.5) * self.dy for j in range(self.ny)]
 
-        self.Vp = props.phi * self.dx * self.dy * props.h
+        self.rel_perm: RelativePermeabilityModel = getattr(
+            props, "rel_perm", None
+        ) or RelativePermeabilityModel(
+            swr=float(getattr(props, "swr", 0.0)),
+            sgc=float(getattr(props, "sgc", 0.0)),
+        )
+        self._phi_eff: float = props.phi * self.rel_perm.effective_porosity_factor()
+        self._krg_eff: float = self.rel_perm.effective_permeability_factor()
+        self.Vp = self._phi_eff * self.dx * self.dy * props.h
 
         seen_names: set[str] = set()
         self._well_by_name: dict[str, WellSpec2D] = {}
@@ -175,9 +189,9 @@ class UHSAreal2D:
         if props.k_field is not None:
             if len(props.k_field) != props.nx or any(len(row) != props.ny for row in props.k_field):
                 raise ValueError(f"k_field dimensions must match (nx={props.nx}, ny={props.ny})")
-            self.k = props.k_field
+            self.k = [[val * self._krg_eff for val in row] for row in props.k_field]
         else:
-            self.k = [[props.k] * props.ny for _ in range(props.nx)]
+            self.k = [[props.k * self._krg_eff] * props.ny for _ in range(props.nx)]
 
     def _k_harm_x(self, i: int, j: int) -> float:
         kL = self.k[i][j]

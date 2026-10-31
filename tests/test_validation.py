@@ -1226,6 +1226,228 @@ class TestH2MultiSimValidation(unittest.TestCase):
                     2,
                 )
 
+    def test_40_multicomponent_eos_and_cushion_gas_mixing(self) -> None:
+        """Direction 2: Multicomponent PR-EOS (H2/CH4/CO2/N2), Wobbe Index, and 0D/1D cushion-gas dilution."""
+        from h2multisim.models.one_d import UHSRadial1D, WellControl, okoroafor_radial
+        from h2multisim.models.zero_d import (
+            ReservoirState,
+            SchedulePeriod,
+            UHSReservoir0D,
+            build_okoroafor_reservoir,
+        )
+        from h2multisim.thermo import (
+            PengRobinsonH2,
+            PengRobinsonMixture,
+            cp_real_h2,
+            gamma_real_h2,
+            viscosity_h2,
+        )
+        from h2multisim.units import bar_to_pa
+
+        eos_pure = PengRobinsonH2(peneloux=True)
+        eos_mix_h2 = PengRobinsonMixture({"H2": 1.0}, peneloux=True)
+
+        P_test = bar_to_pa(120.0)
+        T_test = 325.0
+        self.assertAlmostEqual(
+            eos_pure.z_factor(P_test, T_test),
+            eos_mix_h2.z_factor(P_test, T_test),
+            places=12,
+        )
+        self.assertAlmostEqual(
+            eos_pure.density(P_test, T_test),
+            eos_mix_h2.density(P_test, T_test),
+            places=12,
+        )
+        self.assertAlmostEqual(
+            viscosity_h2(T_test, P_test, eos=eos_pure),
+            viscosity_h2(T_test, P_test, eos=eos_mix_h2),
+            places=12,
+        )
+        self.assertAlmostEqual(
+            cp_real_h2(T_test, P_test, eos=eos_pure),
+            cp_real_h2(T_test, P_test, eos=eos_mix_h2),
+            places=10,
+        )
+        self.assertAlmostEqual(
+            gamma_real_h2(T_test, P_test, eos=eos_pure),
+            gamma_real_h2(T_test, P_test, eos=eos_mix_h2),
+            places=10,
+        )
+
+        # Density ordering at 100 bar, 320 K: H2 < CH4 < N2 < CO2
+        rho_h2 = eos_mix_h2.density(bar_to_pa(100.0), 320.0, {"H2": 1.0})
+        rho_ch4 = eos_mix_h2.density(bar_to_pa(100.0), 320.0, {"CH4": 1.0})
+        rho_n2 = eos_mix_h2.density(bar_to_pa(100.0), 320.0, {"N2": 1.0})
+        rho_co2 = eos_mix_h2.density(bar_to_pa(100.0), 320.0, {"CO2": 1.0})
+        self.assertLess(rho_h2, rho_ch4)
+        self.assertLess(rho_ch4, rho_n2)
+        self.assertLess(rho_n2, rho_co2)
+
+        # Component fugacity coefficients & Wobbe index checks
+        comp_blend = {"H2": 0.70, "CH4": 0.20, "CO2": 0.05, "N2": 0.05}
+        phis = eos_mix_h2.component_fugacity_coefficients(P_test, T_test, comp_blend)
+        self.assertEqual(set(phis.keys()), {"H2", "CH4", "CO2", "N2"})
+        for sp, phi_val in phis.items():
+            self.assertGreater(phi_val, 0.2, msg=f"Invalid fugacity coeff for {sp}")
+            self.assertLess(phi_val, 3.0, msg=f"Invalid fugacity coeff for {sp}")
+
+        hhv_h2, lhv_h2 = eos_mix_h2.heating_values_volumetric({"H2": 1.0})
+        hhv_ch4, _ = eos_mix_h2.heating_values_volumetric({"CH4": 1.0})
+        hhv_n2, _ = eos_mix_h2.heating_values_volumetric({"N2": 1.0})
+        self.assertGreater(hhv_h2, lhv_h2)
+        self.assertGreater(hhv_ch4, hhv_h2 * 2.5)
+        self.assertEqual(hhv_n2, 0.0)
+        wi_h2 = eos_mix_h2.wobbe_index({"H2": 1.0})
+        wi_n2_diluted = eos_mix_h2.wobbe_index({"H2": 0.8, "N2": 0.2})
+        self.assertGreater(wi_h2, 40.0)
+        self.assertLess(wi_n2_diluted, wi_h2)
+
+        # 0D cushion-gas mixing & plume segregation test
+        props_0d = build_okoroafor_reservoir()
+        props_0d.cushion_gas = "CH4"
+        props_0d.initial_composition = {"H2": 0.20, "CH4": 0.80}
+        props_0d.injected_composition = {"H2": 1.0}
+        props_0d.plume_segregation = 0.0
+        sched_0d = [
+            SchedulePeriod("inj", "inject", 30.0, bar_to_pa(150.0), 15.0),
+            SchedulePeriod("wdr", "withdraw", 20.0, bar_to_pa(60.0), 15.0),
+        ]
+        sim_0d_mixed = UHSReservoir0D(props_0d)
+        init_0d = ReservoirState(
+            pressure=props_0d.reference_pressure,
+            temperature=props_0d.reference_temperature,
+            mass=sim_0d_mixed.mass_from_state(
+                props_0d.reference_pressure, props_0d.reference_temperature
+            ),
+        )
+        res_0d_mixed = sim_0d_mixed.run_schedule(init_0d, sched_0d, dt_s=86400.0)
+        self.assertLess(res_0d_mixed.metrics["mass_balance_error"], 1e-6)
+        self.assertAlmostEqual(res_0d_mixed.metrics["initial_h2_purity_mol_pct"], 20.0, places=6)
+        self.assertGreater(res_0d_mixed.metrics["final_h2_purity_mol_pct"], 20.0)
+
+        # With buoyant plume segregation > 0, withdrawn stream is enriched in H2
+        props_0d_seg = build_okoroafor_reservoir()
+        props_0d_seg.cushion_gas = "CH4"
+        props_0d_seg.initial_composition = {"H2": 0.20, "CH4": 0.80}
+        props_0d_seg.injected_composition = {"H2": 1.0}
+        props_0d_seg.plume_segregation = 0.6
+        sim_0d_seg = UHSReservoir0D(props_0d_seg)
+        res_0d_seg = sim_0d_seg.run_schedule(init_0d, sched_0d, dt_s=86400.0)
+        self.assertLess(res_0d_seg.metrics["mass_balance_error"], 1e-6)
+        # Enriched H2 withdrawal leaves slightly less H2 mole fraction behind than well-mixed
+        self.assertLess(
+            res_0d_seg.metrics["final_h2_purity_mol_pct"],
+            res_0d_mixed.metrics["final_h2_purity_mol_pct"],
+        )
+
+        # 1D radial advection-dispersion cushion-gas mixing test
+        props_1d, _ = okoroafor_radial()
+        props_1d.cushion_gas = "CH4"
+        props_1d.initial_h2_mole_fraction = 0.10
+        props_1d.dispersivity_m = 1.0
+        sched_1d = [
+            WellControl("inj", "inject", 10.0, bar_to_pa(120.0), 15.0),
+            WellControl("wdr", "withdraw", 5.0, bar_to_pa(65.0), 10.0),
+        ]
+        sim_1d = UHSRadial1D(props_1d, N=25)
+        res_1d = sim_1d.run_schedule(sched_1d, dt_days=0.5, snap_days=[10.0, 15.0])
+        self.assertLess(res_1d.metrics["mass_balance_error"], 1e-4)
+        self.assertEqual(res_1d.metrics["converged"], 1.0)
+        # After 10 days of H2 injection, near-wellbore is high purity while far field is near 0.10
+        snap_inj = res_1d.snapshots[0]
+        self.assertGreater(snap_inj.h2_mole_fraction[0], 0.85)
+        self.assertLess(snap_inj.h2_mole_fraction[-1], 0.20)
+        for y_val in snap_inj.h2_mole_fraction:
+            self.assertGreaterEqual(y_val, 0.0)
+            self.assertLessEqual(y_val, 1.0)
+
+    def test_41_aquifer_relative_permeability_and_swr(self) -> None:
+        """Direction 3: Two-phase aquifer S_wr, Corey / Brooks-Corey k_rg(S_g), capillary pressure, and Buckley-Leverett front."""
+        from h2multisim.models.one_d import UHSRadial1D, WellControl, okoroafor_radial
+        from h2multisim.models.three_d import UHSFieldScale3D, scenario_single_well_3d
+        from h2multisim.models.two_d import UHSAreal2D, scenario_single_well
+        from h2multisim.models.zero_d import UHSReservoir0D, build_okoroafor_reservoir
+        from h2multisim.thermo import RelativePermeabilityModel
+        from h2multisim.units import bar_to_pa
+
+        rp_corey = RelativePermeabilityModel(
+            model="corey",
+            swr=0.20,
+            sgc=0.05,
+            krg_max=0.75,
+            krw_max=0.85,
+            n_g=2.0,
+            n_w=3.0,
+        )
+        self.assertAlmostEqual(rp_corey.krg(0.05), 0.0, places=12)
+        self.assertAlmostEqual(rp_corey.krg(0.80), 0.75, places=12)
+        self.assertAlmostEqual(rp_corey.krw(0.20), 0.0, places=12)
+        self.assertAlmostEqual(rp_corey.krw(0.95), 0.85, places=12)
+        self.assertAlmostEqual(rp_corey.krg(0.425), 0.75 * (0.5**2), places=12)
+
+        rp_bc = RelativePermeabilityModel(
+            model="brooks_corey",
+            swr=0.25,
+            sgc=0.05,
+            krg_max=0.70,
+            brooks_corey_lambda=2.0,
+            entry_pressure_Pa=8.0e3,
+        )
+        self.assertAlmostEqual(rp_bc.krg(0.05), 0.0, places=12)
+        self.assertAlmostEqual(rp_bc.krg(0.75), 0.70, places=12)
+        pc_mid = rp_bc.capillary_pressure_Pa(0.45)
+        self.assertGreater(pc_mid, 8.0e3)
+        sg_inv = rp_bc.gas_saturation_from_capillary_pressure(pc_mid)
+        self.assertAlmostEqual(sg_inv, (1.0 - 0.25) * (0.45 - 0.05) / (0.75 - 0.05), places=6)
+
+        # Buckley-Leverett / Welge tangent front for H2 displacing brine
+        sg_front, v_front = rp_corey.buckley_leverett_front(mu_g=9.0e-6, mu_w=8.0e-4)
+        self.assertGreater(sg_front, rp_corey.sgc)
+        self.assertLessEqual(sg_front, 1.0 - rp_corey.swr)
+        self.assertGreater(v_front, 1.0)
+
+        # Multi-scale pore volume & permeability reduction under S_wr = 0.25
+        p0_dry = build_okoroafor_reservoir()
+        p0_wet = build_okoroafor_reservoir()
+        p0_wet.swr = 0.25
+        sim0_dry = UHSReservoir0D(p0_dry)
+        sim0_wet = UHSReservoir0D(p0_wet)
+        self.assertAlmostEqual(sim0_wet.V_pore0 / sim0_dry.V_pore0, 0.75, places=12)
+        self.assertAlmostEqual(
+            sim0_wet._productivity_index() / sim0_dry._productivity_index(),
+            0.75**2,
+            places=12,
+        )
+
+        # 1D radial with S_wr = 0.25
+        p1_dry, _ = okoroafor_radial()
+        p1_wet, _ = okoroafor_radial()
+        p1_wet.swr = 0.25
+        sched1 = [WellControl("inj", "inject", 5.0, bar_to_pa(110.0), 20.0)]
+        r1_dry = UHSRadial1D(p1_dry, N=20).run_schedule(sched1, dt_days=0.5)
+        r1_wet = UHSRadial1D(p1_wet, N=20).run_schedule(sched1, dt_days=0.5)
+        self.assertAlmostEqual(
+            r1_wet.metrics["initial_mass_kg"] / r1_dry.metrics["initial_mass_kg"],
+            0.75,
+            places=12,
+        )
+        self.assertLess(r1_wet.metrics["total_injected_kg"], r1_dry.metrics["total_injected_kg"])
+        self.assertLess(r1_wet.metrics["mass_balance_error"], 1e-4)
+
+        # 2D and 3D pore volume & effective permeability scaling with S_wr = 0.20
+        p2, w2, _ = scenario_single_well()
+        p2.swr = 0.20
+        sim2 = UHSAreal2D(p2, w2)
+        self.assertAlmostEqual(sim2._phi_eff / p2.phi, 0.80, places=12)
+        self.assertAlmostEqual(sim2._krg_eff, 0.80**2, places=12)
+
+        p3, w3, _ = scenario_single_well_3d()
+        p3.swr = 0.20
+        sim3 = UHSFieldScale3D(p3, w3)
+        self.assertAlmostEqual(sim3._phi_eff / p3.phi, 0.80, places=12)
+        self.assertAlmostEqual(sim3._krg_eff, 0.80**2, places=12)
+
 
 if __name__ == "__main__":
     unittest.main()
