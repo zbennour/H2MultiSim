@@ -224,7 +224,7 @@ class PengRobinsonH2:
 def cp_ideal_h2(T: float) -> float:
     """
     Ideal-gas molar heat capacity Cp°(T) [J/(mol·K)] — NIST Shomate equation.
-    Valid from 298 to 1000 K (extrapolates smoothly to 50 K).
+    Valid from 298 to 1000 K; acceptable down to ~200 K, unreliable below ~100 K.
     """
     T_val = max(float(T), 50.0)
     t = T_val / 1000.0
@@ -237,20 +237,21 @@ def cp_specific_ideal_h2(T: float) -> float:
     return cp_ideal_h2(T) / M_H2
 
 
-# ── Real-gas specific heat ratio γ(T, P) ─────────────────────────────────────
-def gamma_real_h2(
-    T: float, P: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None
-) -> float:
+# ── Real-gas heat capacities ─────────────────────────────────────────────────
+def _real_heat_capacities(
+    T: float, P: float, eos: PengRobinsonH2 | PengRobinsonMixture
+) -> tuple[float, float]:
     """
-    Real-gas heat capacity ratio γ = Cp / Cv at temperature T [K] and pressure P [Pa].
-    Combines Shomate ideal capacity with PR-EOS departure function.
-    """
-    if eos is None:
-        eos = PengRobinsonH2()
+    Real-gas molar (Cp, Cv) [J/(mol·K)] from the Peng-Robinson departure functions.
 
+        Cv = Cv° + Cv_res,   Cv_res = T·a''/(2√2·b) · ln[(V + (1+√2)b) / (V + (1−√2)b)]
+        Cp = Cv − T·(∂P/∂T)²_V / (∂P/∂V)_T
+
+    Departures are evaluated at the untranslated PR molar volume V_PR = Vm + c;
+    a constant Peneloux shift leaves both capacities unchanged.
+    """
     T_val = max(float(T), 50.0)
     P_val = max(float(P), 1.0)
-    # Evaluate cubic departure functions at the untranslated PR molar volume V_PR = Vm + c
     Vm = eos.molar_volume(P_val, T_val) + eos.volume_translation
     b = eos.b
     R = R_UNIVERSAL
@@ -264,22 +265,33 @@ def gamma_real_h2(
     dV = Vm * 1e-4 + 1e-12
     dPdT_V = (_press(Vm, T_val + dT) - _press(Vm, T_val - dT)) / (2.0 * dT)
     dPdV_T = (_press(Vm + dV, T_val) - _press(Vm - dV, T_val)) / (2.0 * dV)
-
-    Cp_Cv = -T_val * dPdT_V**2 / dPdV_T if abs(dPdV_T) > 1e-30 else R
+    Cp_minus_Cv = -T_val * dPdT_V**2 / dPdV_T if dPdV_T < -1e-30 else R
 
     s2 = math.sqrt(2.0)
-    d2a = eos.d2a_dT2(T_val)
     num = Vm + (1.0 + s2) * b
     den = Vm + (1.0 - s2) * b
-    delta_Cp = (
-        -T_val * d2a / (2.0 * s2 * b) * math.log(num / den)
+    Cv_res = (
+        T_val * eos.d2a_dT2(T_val) / (2.0 * s2 * b) * math.log(num / den)
         if abs(den) > 1e-20 and num / den > 0.0
         else 0.0
     )
 
     cp0 = eos.cp_ideal(T_val) if hasattr(eos, "cp_ideal") else cp_ideal_h2(T_val)
-    Cp = max(cp0 + delta_Cp, 14.0)
-    Cv = max(Cp - Cp_Cv, 8.0)
+    Cv = max(cp0 - R + Cv_res, 8.0)
+    Cp = max(Cv + Cp_minus_Cv, 14.0)
+    return Cp, Cv
+
+
+def gamma_real_h2(
+    T: float, P: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None
+) -> float:
+    """
+    Real-gas heat capacity ratio γ = Cp / Cv at temperature T [K] and pressure P [Pa].
+    Combines Shomate ideal capacity with PR-EOS departure functions.
+    """
+    if eos is None:
+        eos = PengRobinsonH2()
+    Cp, Cv = _real_heat_capacities(T, P, eos)
     return float(min(max(Cp / Cv, 1.10), 1.80))
 
 
@@ -290,26 +302,11 @@ def cp_real_h2(
     Real-gas isobaric molar heat capacity Cp [J/(mol·K)] at (T, P).
 
     Combines the NIST Shomate ideal-gas capacity with the Peng-Robinson
-    enthalpy departure function (∂ΔH/∂T)_P.
+    residual Cv and the exact Cp − Cv relation.
     """
     if eos is None:
         eos = PengRobinsonH2()
-
-    T_val = max(float(T), 50.0)
-    P_val = max(float(P), 1.0)
-    Vm = eos.molar_volume(P_val, T_val) + eos.volume_translation
-    b = eos.b
-    s2 = math.sqrt(2.0)
-    d2a = eos.d2a_dT2(T_val)
-    num = Vm + (1.0 + s2) * b
-    den = Vm + (1.0 - s2) * b
-    delta_Cp = (
-        -T_val * d2a / (2.0 * s2 * b) * math.log(num / den)
-        if abs(den) > 1e-20 and num / den > 0.0
-        else 0.0
-    )
-    cp0 = eos.cp_ideal(T_val) if hasattr(eos, "cp_ideal") else cp_ideal_h2(T_val)
-    return float(max(cp0 + delta_Cp, 14.0))
+    return float(_real_heat_capacities(T, P, eos)[0])
 
 
 def cp_specific_real_h2(
@@ -366,47 +363,81 @@ def viscosity_h2(
 
 
 # ── Joule-Thomson coefficient ────────────────────────────────────────────────
-def joule_thomson_coefficient(T: float, P: float, eos: PengRobinsonH2 | None = None) -> float:
-    """
-    Joule-Thomson throttling coefficient μ_JT = (∂T/∂P)_H [K/Pa] for H2.
+_JT_EFFECTIVE_C_H2: float = -8.0e-6  # m³/mol empirical JT translation for pure H2
 
-    Computed from the fundamental thermodynamic identity:
-        μ_JT = (1 / Cp) · [ T · (∂Vm/∂T)_P - Vm ]
-    which simplifies for the volume-translated cubic EOS (Vm = Z·R·T/P - c) to:
-        μ_JT = (1 / Cp) · [ (R·T² / P) · (∂Z/∂T)_P + c ]
+
+def joule_thomson_coefficient(
+    T: float, P: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None
+) -> float:
+    """
+    Joule-Thomson throttling coefficient μ_JT = (∂T/∂P)_H [K/Pa].
+
+    From the thermodynamic identity μ_JT = [T·(∂Vm/∂T)_P − Vm] / Cp with
+    Vm = Z·R·T/P, where Z is the (volume-translated) compressibility factor
+    returned by ``eos.z_factor``:
+
+        μ_JT = (R·T² / P) · (∂Z/∂T)_P / Cp
+
+    Pure H2 (``PengRobinsonH2`` or ``eos=None``): plain PR badly underpredicts
+    the H2 second virial coefficient, so an *effective* JT translation
+    ``c_JT = -8.0e-6`` m³/mol (twice the volumetric Peneloux value) is applied,
+    i.e. μ_JT·Cp = (R·T²/P)·(∂Z_PR/∂T)_P + c_JT.  This is an empirical fit to
+    CoolProp/Leachman (within ±6 % at ~100 bar; -46 %…+23 % over 10-300 bar at
+    293-350 K), not a consequence of the volumetric translation.  Mixture EOS
+    instances are evaluated as given, with their own composition and
+    translation; cubic-PR mixture JT values are screening estimates only.
 
     Physical note: Below the inversion temperature (~202 K at 1 bar), μ_JT > 0.
-    At UHS reservoir conditions (T > 250 K), μ_JT < 0 (H2 warms on isenthalpic expansion).
+    At UHS reservoir conditions (T > 250 K), μ_JT < 0 for H2-rich gas.
     """
-    if eos is None or eos.volume_translation == 0.0:
-        eos = PengRobinsonH2(volume_translation=-4.0e-6)
-
     T_val = max(float(T), 50.0)
     P_val = max(float(P), 1.0)
     dT = max(T_val * 1e-4, 0.01)
-    Z_hi = eos.z_factor(P_val, T_val + dT)
-    Z_lo = eos.z_factor(P_val, T_val - dT)
-    dZ_dT = (Z_hi - Z_lo) / (2.0 * dT)
 
-    c = eos.volume_translation
-    num = (R_UNIVERSAL * T_val**2 / P_val) * dZ_dT + c
-    Cp = cp_real_h2(T_val, P_val, eos)
+    if isinstance(eos, PengRobinsonMixture):
+        Z_hi = eos.z_factor(P_val, T_val + dT)
+        Z_lo = eos.z_factor(P_val, T_val - dT)
+        num = (R_UNIVERSAL * T_val**2 / P_val) * (Z_hi - Z_lo) / (2.0 * dT)
+        Cp = cp_real_h2(T_val, P_val, eos)
+        return float(num / max(Cp, 1.0))
+
+    plain = PengRobinsonH2()
+    Z_hi = plain.z_factor(P_val, T_val + dT)
+    Z_lo = plain.z_factor(P_val, T_val - dT)
+    num = (R_UNIVERSAL * T_val**2 / P_val) * (Z_hi - Z_lo) / (2.0 * dT) + _JT_EFFECTIVE_C_H2
+    Cp = cp_real_h2(T_val, P_val, plain)
     return float(num / max(Cp, 1.0))
 
 
 # ── Coupled Thermal Modeling ─────────────────────────────────────────────────
 def adiabatic_temperature(
-    T_old: float, P_old: float, P_new: float, eos: PengRobinsonH2 | None = None
+    T_old: float,
+    P_old: float,
+    P_new: float,
+    eos: PengRobinsonH2 | PengRobinsonMixture | None = None,
 ) -> float:
     """
     Isentropic gas temperature change under rapid expansion or compression:
-    T_new = T_old · (P_new / P_old)^((γ - 1) / γ).
+    T_new = T_old · (P_new / P_old)^n, with the real-gas isentropic exponent
+
+        n = (∂lnT/∂lnP)_S = P·(∂Vm/∂T)_P / Cp = R·(Z + T·(∂Z/∂T)_P) / Cp
+
+    evaluated at the initial state (n → (γ−1)/γ for an ideal gas).
     """
+    if eos is None:
+        eos = PengRobinsonH2()
     T_init = max(float(T_old), 50.0)
     P_init = max(float(P_old), 1.0)
     P_final = max(float(P_new), 1.0)
-    g = gamma_real_h2(T_init, P_init, eos)
-    return float(max(T_init * (P_final / P_init) ** ((g - 1.0) / g), 50.0))
+    if P_final == P_init:
+        return T_init
+    dT = max(T_init * 1e-4, 0.01)
+    Z = eos.z_factor(P_init, T_init)
+    dZ_dT = (eos.z_factor(P_init, T_init + dT) - eos.z_factor(P_init, T_init - dT)) / (2.0 * dT)
+    Cp = cp_real_h2(T_init, P_init, eos)
+    n = R_UNIVERSAL * (Z + T_init * dZ_dT) / max(Cp, 1.0)
+    n = min(max(n, 0.05), 0.5)
+    return float(max(T_init * (P_final / P_init) ** n, 50.0))
 
 
 def thermal_relaxation_update(
@@ -428,7 +459,7 @@ def coupled_temperature_update(
     T_geothermal: float,
     dt_s: float,
     tau_s: float,
-    eos: PengRobinsonH2 | None = None,
+    eos: PengRobinsonH2 | PengRobinsonMixture | None = None,
 ) -> float:
     """
     Coupled two-stage thermal update:
@@ -1124,12 +1155,12 @@ class RelativePermeabilityModel:
         return float(self.entry_pressure_Pa * (s_we ** (-1.0 / self.brooks_corey_lambda)))
 
     def gas_saturation_from_capillary_pressure(self, P_c: float) -> float:
-        """Inverse Brooks-Corey equilibrium gas saturation S_g(P_c) in [0, 1 - S_wr]."""
+        """Inverse Brooks-Corey equilibrium gas saturation S_g(P_c) in [S_gc, 1 - S_wr] (0 below entry)."""
         if P_c <= self.entry_pressure_Pa or self.entry_pressure_Pa <= 0.0:
             return 0.0
         s_we = (self.entry_pressure_Pa / float(P_c)) ** self.brooks_corey_lambda
         s_we = min(max(s_we, 0.0), 1.0)
-        return float((1.0 - self.swr) * (1.0 - s_we))
+        return float(self.sgc + (1.0 - self.swr - self.sgc) * (1.0 - s_we))
 
     def fractional_flow_gas(
         self,

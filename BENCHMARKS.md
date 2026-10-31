@@ -116,15 +116,21 @@ Executing `py audit/bench_analytical_1d.py` or running test `test_38_analytical_
 | **473.4** | $78.841$ | $78.926$ | $+0.085$ | **0.108%** |
 | **1561.4** | $79.999$ | $80.000$ | $+0.001$ | **0.001%** |
 
-- **Max Flowing BHP Error**: $\mathbf{0.216\%}$ ($+0.125\text{ bar}$) at $t=0.5\text{ d}$, improving to $\mathbf{0.010\%}$ at $t=5.0\text{ d}$.
-- **Max Spatial Profile Error**: $\mathbf{0.108\%}$ ($+0.085\text{ bar}$) across 4 orders of magnitude in radius ($0.11\text{–}1561\text{ m}$).
-- **Global Mass Balance Closure Error**: $\mathbf{9.93\times 10^{-13}}$.
+- **Max Flowing BHP Error**: $\mathbf{0.228\%}$ at $t=0.5\text{ d}$, improving to $\mathbf{0.004\%}$ at $t=5.0\text{ d}$ (v1.2.0: 0.216 %).
+- **Max Spatial Profile Error**: $\mathbf{0.121\%}$ across 4 orders of magnitude in radius ($0.11\text{–}1561\text{ m}$) (v1.2.0: 0.108 %).
+- **Global Mass Balance Closure Error**: $\mathbf{1.66\times 10^{-13}}$.
+
+> The tables above were captured with v1.2.0. From v1.3.1 the 1D solver applies the rock compressibility $C_t$ that the analytical solution already included in $c_t$, and uses the real-gas isentropic temperature update; the summary figures above are from `audit/bench_analytical_1d.py` on v1.3.1.
 
 ---
 
 ## 4. Tier 3: Numerical Cross-Simulator Deck Bridge (OPM Flow & ECLIPSE 100/300)
 
 H2MultiSim provides a native, built-in deck export engine (`h2multisim.deck_export`) that converts any 1D, 2D, or 3D simulation model or scenario into fully valid ECLIPSE 100/300 and OPM Flow `.DATA` format.
+
+### Model equivalence (v1.3.1)
+
+The exported decks are built to match the H2MultiSim solver inputs: `ROCK` carries the same pore compressibility $C_t$ the 1D/2D/3D solvers apply, `PORO`/`PERM*` include the solvers' immobile-water factors ($1-S_{wr}$, $k_{rg}$), 3D layers and perforations are written top-down (ECLIPSE `K = 1` is the top, H2MultiSim layer 0 is the bottom), 3D `PERMZ = PERMX` (the solver is isotropic), producer rate caps are written to the `WCONPROD` GRAT item, and the 1D skin factor is written to `COMPDAT`. The decks remain isothermal; H2MultiSim's adiabatic/relaxation thermal model has no deck counterpart, so expect small differences during rapid pressure swings.
 
 ### Supported ECLIPSE Keywords
 
