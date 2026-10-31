@@ -8,7 +8,7 @@ authors:
     email: zbennour@yahoo.com
 repository-code: "https://github.com/zbennour/H2MultiSim"
 license: GPL-3.0-or-later
-version: "1.10.0"
+version: "1.11.0"
 date-released: "2026-10-31"
 keywords:
   - hydrogen storage

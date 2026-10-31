@@ -25,6 +25,7 @@ from h2multisim.thermo import (
     PoreVolumeModel,
     RelativePermeabilityModel,
     _real_heat_capacities,
+    compression_work_mass,
     coupled_temperature_update,
     enthalpy_molar,
     heating_values_mass,
@@ -90,6 +91,10 @@ class ReservoirProperties:
     injection_temperature: float | None = None  # K wellhead/injected gas T (None -> reference)
     # J/(m³·K) of rock solids; None -> 2.2e6 for porous media, 0 for caverns (walls via tau).
     rock_heat_capacity: float | None = None
+    # Surface compression for energy accounting (does not affect the flow solution).
+    supply_pressure: float = 30.0e5  # Pa pipeline / electrolyser delivery pressure
+    compressor_efficiency: float = 0.75  # isentropic efficiency per stage
+    compressor_max_stage_ratio: float = 3.0  # stages with intercooling to the supply temperature
 
     def __post_init__(self) -> None:
         if self.thermal_model not in ("energy_balance", "lumped"):
@@ -102,6 +107,15 @@ class ReservoirProperties:
                 "ReservoirProperties",
                 positive={"injection_temperature": self.injection_temperature},
             )
+        check_inputs(
+            "ReservoirProperties",
+            positive={
+                "supply_pressure": self.supply_pressure,
+                "compressor_efficiency": self.compressor_efficiency,
+            },
+        )
+        if self.compressor_max_stage_ratio <= 1.0:
+            raise ValueError("ReservoirProperties: compressor_max_stage_ratio must be > 1")
         if self.rock_heat_capacity is not None:
             check_inputs(
                 "ReservoirProperties", non_negative={"rock_heat_capacity": self.rock_heat_capacity}
@@ -300,6 +314,7 @@ class UHSReservoir0D:
         self._h_old: float = 0.0  # J/kg specific enthalpy of the in-place gas at step start
         self._h_in_old: float = 0.0  # J/kg specific enthalpy of injected gas at P_old
         self._T_guess: float | None = None  # warm start for the per-step temperature solve
+        self._comp_cache: dict[tuple[int, int], float] = {}
 
     def pore_volume(self, P: float) -> float:
         """Pore volume [m³] at pressure P."""
@@ -380,6 +395,25 @@ class UHSReservoir0D:
                 sp: max(comp_m_old.get(sp, 0.0) + w_prod.get(sp, 0.0) * dm, 0.0) for sp in all_sp
             }
         return PengRobinsonMixture.mole_fractions_from_mass(m_map)
+
+    def _compression_work(self, state: ReservoirState, q: float) -> float:
+        """Specific shaft work [J/kg] from supply pressure to the injection bottom-hole pressure."""
+        P_res, T_res = state.pressure, state.temperature
+        rho = self.eos.density(P_res, T_res)
+        P_bhp = P_res + q / max(self._productivity_index(P_res, T_res, rho) * rho, 1e-30)
+        key = (round(self.props.supply_pressure), round(P_bhp / 1.0e4))  # 0.1 bar buckets
+        cached = self._comp_cache.get(key)
+        if cached is None:
+            cached = compression_work_mass(
+                self.props.supply_pressure,
+                P_bhp,
+                self.T_inj,
+                self._inj_eos,
+                self.props.compressor_efficiency,
+                self.props.compressor_max_stage_ratio,
+            )
+            self._comp_cache[key] = cached
+        return cached
 
     def _molar_mass(self, eos: PengRobinsonH2 | PengRobinsonMixture) -> float:
         return eos.molar_mass() if isinstance(eos, PengRobinsonMixture) else M_H2
@@ -672,6 +706,7 @@ class UHSReservoir0D:
         hhv_inj, lhv_inj = heating_values_mass(self._inj_comp)
         e_inj = [0.0, 0.0]  # J (HHV, LHV) injected
         e_wdr = [0.0, 0.0]  # J (HHV, LHV) withdrawn
+        e_comp = 0.0  # J shaft work to compress injected gas from supply to bottom-hole pressure
 
         y_cur = y0
         y_h2_init = y_cur.get("H2", 1.0)
@@ -716,6 +751,8 @@ class UHSReservoir0D:
                         inj_kg += q * dt_k
                         e_inj[0] += q * dt_k * hhv_inj
                         e_inj[1] += q * dt_k * lhv_inj
+                        if q > 0.0:
+                            e_comp += q * dt_k * self._compression_work(new_state, q)
                     else:
                         wdr_kg -= q * dt_k
                         hhv_p, lhv_p = heating_values_mass(self._last_prod_comp or y_before)
@@ -775,6 +812,10 @@ class UHSReservoir0D:
             # Working gas valued at the injected-stream heating value (design capacity basis).
             "working_gas_energy_GWh_LHV": J_to_GWh(wg * lhv_inj),
             "working_gas_energy_GWh_HHV": J_to_GWh(wg * hhv_inj),
+            "compression_energy_GWh": J_to_GWh(e_comp),
+            "compression_energy_pct_of_injected_LHV": (
+                100.0 * e_comp / e_inj[1] if e_inj[1] > 0.0 else 0.0
+            ),
             "withdrawn_to_injected_energy_pct": (
                 100.0 * e_wdr[1] / e_inj[1] if e_inj[1] > 0.0 else 0.0
             ),
