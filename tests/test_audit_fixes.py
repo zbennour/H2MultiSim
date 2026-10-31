@@ -381,6 +381,36 @@ class TestVerifyAndCLI(unittest.TestCase):
         self.assertIn("working_gas_energy_GWh_LHV", data["metrics"])
 
 
+class TestAdaptiveStepping0D(unittest.TestCase):
+    def _cycles(self):
+        sched = []
+        for i in range(2):
+            sched += [
+                SchedulePeriod(f"i{i}", "inject", 0.5, bar_to_pa(120.0), 15.0),
+                SchedulePeriod(f"w{i}", "withdraw", 0.4, bar_to_pa(40.0), 15.0),
+                SchedulePeriod(f"s{i}", "shut_in", 0.1, 0.0, 0.0),
+            ]
+        return sched
+
+    def _run(self, dt_days: float, **kw):
+        props = build_teesside_cavern()
+        model = UHSReservoir0D(props)
+        P0, T0 = props.reference_pressure, props.reference_temperature
+        state = ReservoirState(P0, T0, model.mass_from_state(P0, T0))
+        return model.run_schedule(state, self._cycles(), dt_days * 86400.0, **kw)
+
+    def test_adaptive_matches_fine_reference(self) -> None:
+        ref = self._run(0.005, adaptive=False)
+        coarse = self._run(1.0, adaptive=False)
+        adapt = self._run(1.0)
+        t_ref = max(ref.temperatures)
+        self.assertLess(abs(max(adapt.temperatures) - t_ref), 1.0)
+        self.assertGreater(abs(max(coarse.temperatures) - t_ref), 3.0)  # fixed 1-day steps miss it
+        self.assertEqual(adapt.metrics["converged"], 1.0)
+        dT = [abs(b - a) for a, b in zip(adapt.temperatures, adapt.temperatures[1:])]
+        self.assertLessEqual(max(dT), 5.0 + 1e-6)
+
+
 class TestModeValidation(unittest.TestCase):
     def test_unknown_modes_rejected(self) -> None:
         with self.assertRaises(ValueError):

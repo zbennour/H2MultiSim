@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.9.0 — 2026-10-31
+
+### 0D adaptive time stepping (AUDIT.md §4.9)
+- `UHSReservoir0D.run_schedule` sub-steps each nominal step so that no accepted sub-step changes pressure by more than `max_dP_bar` (default 10) or temperature by more than `max_dT_K` (default 5). Rejected sub-steps are halved down to `min_dt_s`, and smooth sub-steps grow again.
+- Why: with 1-day steps the canonical Teesside cycle (0.4-day withdrawals) was solved in a single step, so the peak temperature came out 12.5 K low (73.7 vs 86.2 °C at a 0.02-day reference) and withdrawn mass 0.8 % high. With adaptive stepping the peak is 86.5 °C and withdrawal is within 0.04 %. Porous-reservoir results are essentially unchanged.
+- `adaptive=False` (CLI `--fixed-dt`) reproduces fixed stepping exactly. A full 180-cycle Teesside run takes ~25 s instead of ~3 s.
+
 ## v1.8.0 — 2026-10-31
 
 ### CLI (AUDIT.md §4.10)

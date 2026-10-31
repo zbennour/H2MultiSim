@@ -602,8 +602,25 @@ class UHSReservoir0D:
         schedule: list[SchedulePeriod],
         dt_s: float,
         collect_time_series: bool = True,
+        adaptive: bool = True,
+        max_dP_bar: float = 10.0,
+        max_dT_K: float = 5.0,
+        min_dt_s: float = 60.0,
     ) -> SimulationResult:
+        """
+        Run a schedule with nominal step ``dt_s``.
+
+        With ``adaptive=True`` each nominal step is sub-divided so that no accepted
+        sub-step changes pressure by more than ``max_dP_bar`` or temperature by more
+        than ``max_dT_K`` (rejected sub-steps are halved down to ``min_dt_s``; smooth
+        sub-steps grow again).  Fast cavern transients otherwise lose accuracy:
+        Teesside's peak temperature is 12.5 K low with 1-day steps; with the default
+        limits it is within 0.3 K of a 0.02-day reference.  ``adaptive=False``
+        reproduces fixed stepping exactly.
+        """
         result = SimulationResult()
+        max_dP_Pa = max_dP_bar * 1.0e5
+        dt_sub: float | None = None
         y0 = normalize_composition(initial_state.composition or self._init_comp)
         if isinstance(self.eos, PengRobinsonMixture):
             self.eos.set_composition(y0)
@@ -645,43 +662,59 @@ class UHSReservoir0D:
             n_steps = max(round(period.duration_days * 86400.0 / dt_s), 1)
             dt_act = period.duration_days * 86400.0 / n_steps
             for _ in range(n_steps):
-                self._last_prod_comp = None
-                y_before = normalize_composition(state.composition or self._init_comp)
-                new_state, q = self.step(state, period, dt_act)
-                if not self._last_step_converged:
-                    unconverged_steps += 1
-                t += dt_act
+                remaining = dt_act
+                dt_try = min(dt_sub or dt_act, dt_act) if adaptive else dt_act
+                while remaining > 1e-6:
+                    dt_try = min(dt_try, remaining)
+                    self._last_prod_comp = None
+                    y_before = normalize_composition(state.composition or self._init_comp)
+                    new_state, q = self.step(state, period, dt_try)
+                    dP = abs(new_state.pressure - state.pressure)
+                    dT = abs(new_state.temperature - state.temperature)
+                    if adaptive and dt_try > min_dt_s and (dP > max_dP_Pa or dT > max_dT_K):
+                        dt_try = max(0.5 * dt_try, min_dt_s)  # reject: halve and retry
+                        continue
+                    dt_k = dt_try
+                    remaining -= dt_k
+                    if adaptive and dP < 0.5 * max_dP_Pa and dT < 0.5 * max_dT_K:
+                        dt_try = 2.0 * dt_try  # smooth step: let the next one grow
+                    dt_sub = dt_try
+                    if not self._last_step_converged:
+                        unconverged_steps += 1
+                    t += dt_k
 
-                if q >= 0.0:
-                    inj_kg += q * dt_act
-                    e_inj[0] += q * dt_act * hhv_inj
-                    e_inj[1] += q * dt_act * lhv_inj
-                else:
-                    wdr_kg -= q * dt_act
-                    hhv_p, lhv_p = heating_values_mass(self._last_prod_comp or y_before)
-                    e_wdr[0] -= q * dt_act * hhv_p
-                    e_wdr[1] -= q * dt_act * lhv_p
+                    if q >= 0.0:
+                        inj_kg += q * dt_k
+                        e_inj[0] += q * dt_k * hhv_inj
+                        e_inj[1] += q * dt_k * lhv_inj
+                    else:
+                        wdr_kg -= q * dt_k
+                        hhv_p, lhv_p = heating_values_mass(self._last_prod_comp or y_before)
+                        e_wdr[0] -= q * dt_k * hhv_p
+                        e_wdr[1] -= q * dt_k * lhv_p
 
-                P_max = max(P_max, new_state.pressure)
-                P_min = min(P_min, new_state.pressure)
-                m_max = max(m_max, new_state.mass)
-                m_min = min(m_min, new_state.mass)
-                state = new_state
+                    P_max = max(P_max, new_state.pressure)
+                    P_min = min(P_min, new_state.pressure)
+                    m_max = max(m_max, new_state.mass)
+                    m_min = min(m_min, new_state.mass)
+                    state = new_state
 
-                y_cur = normalize_composition(state.composition or self._init_comp)
-                y_h2_cur = y_cur.get("H2", 1.0)
-                if q < 0.0:
-                    min_wdr_h2 = min(min_wdr_h2, y_h2_cur)
+                    y_cur = normalize_composition(state.composition or self._init_comp)
+                    y_h2_cur = y_cur.get("H2", 1.0)
+                    if q < 0.0:
+                        min_wdr_h2 = min(min_wdr_h2, y_h2_cur)
 
-                if collect_time_series:
-                    result.times.append(t)
-                    result.pressures.append(state.pressure)
-                    result.temperatures.append(state.temperature)
-                    result.masses.append(state.mass)
-                    result.mass_rates.append(q)
-                    result.h2_mole_fractions.append(y_h2_cur)
-                    result.wobbe_indices.append(self._mix_helper.wobbe_index(y_cur))
-                    result.hhv_values.append(self._mix_helper.heating_values_volumetric(y_cur)[0])
+                    if collect_time_series:
+                        result.times.append(t)
+                        result.pressures.append(state.pressure)
+                        result.temperatures.append(state.temperature)
+                        result.masses.append(state.mass)
+                        result.mass_rates.append(q)
+                        result.h2_mole_fractions.append(y_h2_cur)
+                        result.wobbe_indices.append(self._mix_helper.wobbe_index(y_cur))
+                        result.hhv_values.append(
+                            self._mix_helper.heating_values_volumetric(y_cur)[0]
+                        )
 
         wg = m_max - m_min
         eff = wg / m_max * 100.0 if m_max > 0.0 else 0.0

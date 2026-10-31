@@ -23,7 +23,7 @@ This page states what H2MultiSim models, what it does not, and the measured accu
 
 ## Numerics
 
-- First-order implicit (backward Euler) time stepping with a fixed step per schedule period; no adaptive step control. Transmissibilities are lagged at the start of each step; the accumulation term is iterated to convergence (Picard).
+- First-order implicit (backward Euler) time stepping. The 0D tier sub-steps adaptively (≤ 10 bar and ≤ 5 K per accepted step by default; `adaptive=False` / `--fixed-dt` disables it); 1D/2D/3D use a fixed step per schedule period. Transmissibilities are lagged at the start of each step; the accumulation term is iterated to convergence (Picard).
 - Every tier reports a `converged` metric; check it before using results.
 - Pure Python: suitable for screening, teaching and benchmarking up to roughly 10⁴ cells. A 40×40 2D run over 70 days takes ~30 s; field-scale grids (10⁵+ cells) are impractical.
 
