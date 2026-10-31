@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.0 — 2026-10-31
+
+### Performance (AUDIT.md §4.9)
+- New Jacobi-preconditioned conjugate-gradient pressure solver (`pcg_solve`) is the default in the 2D and 3D tiers (`linear_solver="pcg"`; `"sor"` keeps the previous Gauss-Seidel/red-black SOR). It converges on the Jacobi-scaled true residual in pascals, rather than on the size of the last SOR sweep.
+- The real-gas isentropic exponent is computed once per cell per time step (`isentropic_exponent`) instead of on every Picard iteration.
+- Combined: 2D 40×40 five-spot 57 s → 31 s; 3D 12×12×6 layered 54 s → 21 s; test suite 98 s → 66 s. PCG and SOR results agree to ~1e-8 bar.
+
 ## v1.4.0 — 2026-10-31
 
 ### 0D energy balance (AUDIT.md §4.8 item 4) — default changed

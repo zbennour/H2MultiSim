@@ -12,11 +12,12 @@ import math
 import os
 from dataclasses import dataclass, field
 
-from h2multisim.models._common import check_inputs, validate_mode
+from h2multisim.models._common import check_inputs, pcg_solve, validate_mode
 from h2multisim.thermo import (
     PengRobinsonH2,
     RelativePermeabilityModel,
     coupled_temperature_update,
+    isentropic_exponent,
     viscosity_h2,
 )
 from h2multisim.units import (
@@ -167,7 +168,11 @@ class UHSAreal2D:
         tol_Pa: float = 1.0e-4,
         max_picard: int = 20,
         picard_tol_Pa: float = 1.0e-4,
+        linear_solver: str = "pcg",
     ) -> None:
+        if linear_solver not in ("pcg", "sor"):
+            raise ValueError(f"linear_solver must be 'pcg' or 'sor', got {linear_solver!r}")
+        self.linear_solver = linear_solver
         self.props = props
         self.wells = wells
         if eos is None:
@@ -182,8 +187,9 @@ class UHSAreal2D:
         self.picard_tol_Pa = picard_tol_Pa
         self.tau_s = props.tau_days * 86400.0
         self._last_picard_residual_Pa: float = 0.0
-        self._sor_failures: int = 0  # inner SOR solves that hit max_iter
+        self._sor_failures: int = 0  # inner linear solves (PCG or SOR) that hit max_iter
         self._active_set_failures: int = 0  # steps whose well active set did not settle
+        self._n_exp: list = []  # per-cell isentropic exponent for the current step
 
         self.nx = props.nx
         self.ny = props.ny
@@ -316,6 +322,7 @@ class UHSAreal2D:
                         dt_s=dt,
                         tau_s=self.tau_s,
                         eos=self.eos,
+                        exponent=self._n_exp[i][j],
                     )
                     for j in range(ny)
                 ]
@@ -346,40 +353,10 @@ class UHSAreal2D:
                 ctrl, Pk, Tk, rate_q, shut_wells, nx, ny
             )
 
-            P_new = [list(row) for row in Pk]
-            for _iter in range(self.max_iter):
-                max_change = 0.0
-                for i in range(nx):
-                    for j in range(ny):
-                        TxL = tx[i - 1][j] if i > 0 else 0.0
-                        TxR = tx[i][j] if i < nx - 1 else 0.0
-                        TyB = ty[i][j - 1] if j > 0 else 0.0
-                        TyT = ty[i][j] if j < ny - 1 else 0.0
-
-                        diag = B[i][j] + TxL + TxR + TyB + TyT + well_diag[i][j]
-                        rhs = rhs0[i][j] + well_rhs[i][j]
-
-                        if i > 0:
-                            rhs += TxL * P_new[i - 1][j]
-                        if i < nx - 1:
-                            rhs += TxR * P_new[i + 1][j]
-                        if j > 0:
-                            rhs += TyB * P_new[i][j - 1]
-                        if j < ny - 1:
-                            rhs += TyT * P_new[i][j + 1]
-
-                        P_gs = rhs / max(diag, 1e-30)
-                        P_sor = (1.0 - self.omega) * P_new[i][j] + self.omega * P_gs
-                        P_sor = max(P_sor, 1.0e3)
-
-                        change = abs(P_sor - P_new[i][j])
-                        max_change = max(max_change, change)
-                        P_new[i][j] = P_sor
-
-                if max_change < self.tol_Pa:
-                    break
+            if self.linear_solver == "pcg":
+                P_new = self._solve_linear_pcg(B, rhs0, well_diag, well_rhs, tx, ty, Pk)
             else:
-                self._sor_failures += 1
+                P_new = self._solve_linear_sor(B, rhs0, well_diag, well_rhs, tx, ty, Pk)
 
             change = max(abs(P_new[i][j] - Pk[i][j]) for i in range(nx) for j in range(ny))
             self._last_picard_residual_Pa = change
@@ -398,6 +375,7 @@ class UHSAreal2D:
                     dt_s=dt,
                     tau_s=self.tau_s,
                     eos=self.eos,
+                    exponent=self._n_exp[i][j],
                 )
                 for j in range(ny)
             ]
@@ -422,6 +400,75 @@ class UHSAreal2D:
 
         return Pk, Tk, per_well
 
+    def _linear_system_2d(self, B, rhs0, well_diag, well_rhs, tx, ty):
+        """Flat (diag, neighbours, rhs) of the 2D pressure system, index i·ny + j."""
+        nx, ny = self.nx, self.ny
+        diag: list[float] = []
+        nbrs: list[list[tuple[int, float]]] = []
+        rhs: list[float] = []
+        for i in range(nx):
+            for j in range(ny):
+                links: list[tuple[int, float]] = []
+                if i > 0:
+                    links.append(((i - 1) * ny + j, tx[i - 1][j]))
+                if i < nx - 1:
+                    links.append(((i + 1) * ny + j, tx[i][j]))
+                if j > 0:
+                    links.append((i * ny + j - 1, ty[i][j - 1]))
+                if j < ny - 1:
+                    links.append((i * ny + j + 1, ty[i][j]))
+                diag.append(B[i][j] + sum(t for _, t in links) + well_diag[i][j])
+                nbrs.append(links)
+                rhs.append(rhs0[i][j] + well_rhs[i][j])
+        return diag, nbrs, rhs
+
+    def _solve_linear_pcg(self, B, rhs0, well_diag, well_rhs, tx, ty, Pk):
+        nx, ny = self.nx, self.ny
+        diag, nbrs, rhs = self._linear_system_2d(B, rhs0, well_diag, well_rhs, tx, ty)
+        x0 = [Pk[i][j] for i in range(nx) for j in range(ny)]
+        x, ok = pcg_solve(diag, nbrs, rhs, x0, self.tol_Pa, self.max_iter)
+        if not ok:
+            self._sor_failures += 1
+        return [[max(x[i * ny + j], 1.0e3) for j in range(ny)] for i in range(nx)]
+
+    def _solve_linear_sor(self, B, rhs0, well_diag, well_rhs, tx, ty, Pk):
+        nx, ny = self.nx, self.ny
+        P_new = [list(row) for row in Pk]
+        for _iter in range(self.max_iter):
+            max_change = 0.0
+            for i in range(nx):
+                for j in range(ny):
+                    TxL = tx[i - 1][j] if i > 0 else 0.0
+                    TxR = tx[i][j] if i < nx - 1 else 0.0
+                    TyB = ty[i][j - 1] if j > 0 else 0.0
+                    TyT = ty[i][j] if j < ny - 1 else 0.0
+
+                    diag = B[i][j] + TxL + TxR + TyB + TyT + well_diag[i][j]
+                    rhs = rhs0[i][j] + well_rhs[i][j]
+
+                    if i > 0:
+                        rhs += TxL * P_new[i - 1][j]
+                    if i < nx - 1:
+                        rhs += TxR * P_new[i + 1][j]
+                    if j > 0:
+                        rhs += TyB * P_new[i][j - 1]
+                    if j < ny - 1:
+                        rhs += TyT * P_new[i][j + 1]
+
+                    P_gs = rhs / max(diag, 1e-30)
+                    P_sor = (1.0 - self.omega) * P_new[i][j] + self.omega * P_gs
+                    P_sor = max(P_sor, 1.0e3)
+
+                    change = abs(P_sor - P_new[i][j])
+                    max_change = max(max_change, change)
+                    P_new[i][j] = P_sor
+
+            if max_change < self.tol_Pa:
+                break
+        else:
+            self._sor_failures += 1
+        return P_new
+
     def _solve_pressure(
         self,
         P_old: list[list[float]],
@@ -438,6 +485,11 @@ class UHSAreal2D:
         cell pressure is overwritten, so rates, BHPs and mass are consistent.
         """
         nx, ny = self.nx, self.ny
+        # Isentropic exponent at the start-of-step state, reused by every Picard iteration.
+        self._n_exp = [
+            [isentropic_exponent(T_old[i][j], P_old[i][j], self.eos) for j in range(ny)]
+            for i in range(nx)
+        ]
         tx = [[self._Tx(i, j, P_old, T_old) for j in range(ny)] for i in range(nx - 1)]
         ty = [[self._Ty(i, j, P_old, T_old) for j in range(ny - 1)] for i in range(nx)]
         rho_old = [

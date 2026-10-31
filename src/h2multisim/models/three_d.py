@@ -12,11 +12,12 @@ import math
 import os
 from dataclasses import dataclass, field
 
-from h2multisim.models._common import check_inputs, validate_mode
+from h2multisim.models._common import check_inputs, pcg_solve, validate_mode
 from h2multisim.thermo import (
     PengRobinsonH2,
     RelativePermeabilityModel,
     coupled_temperature_update,
+    isentropic_exponent,
     viscosity_h2,
 )
 from h2multisim.units import (
@@ -177,7 +178,11 @@ class UHSFieldScale3D:
         max_picard: int = 20,
         picard_tol_Pa: float = 1.0e-4,
         hydrostatic_init: bool = True,
+        linear_solver: str = "pcg",
     ) -> None:
+        if linear_solver not in ("pcg", "sor"):
+            raise ValueError(f"linear_solver must be 'pcg' or 'sor', got {linear_solver!r}")
+        self.linear_solver = linear_solver
         self.props = props
         self.wells = wells
         if eos is None:
@@ -194,8 +199,9 @@ class UHSFieldScale3D:
         self.tau_s = props.tau_days * 86400.0
         self.g = G_GRAV
         self._last_picard_residual_Pa: float = 0.0
-        self._sor_failures: int = 0  # inner SOR solves that hit max_iter
+        self._sor_failures: int = 0  # inner linear solves (PCG or SOR) that hit max_iter
         self._active_set_failures: int = 0  # steps whose well active set did not settle
+        self._n_exp: list = []  # per-cell isentropic exponent for the current step
 
         self.nx = props.nx
         self.ny = props.ny
@@ -390,6 +396,7 @@ class UHSFieldScale3D:
                             dt_s=dt,
                             tau_s=self.tau_s,
                             eos=self.eos,
+                            exponent=self._n_exp[i][j][k],
                         )
                         for k in range(nz)
                     ]
@@ -440,68 +447,71 @@ class UHSFieldScale3D:
                 ctrl, Pk, Tk, rate_q, shut_wells, nz
             )
 
-            P_new = [[list(Pk[i][j]) for j in range(ny)] for i in range(nx)]
-            for _it in range(self.max_iter):
-                max_change = 0.0
-                for parity in (0, 1):
-                    for i in range(nx):
-                        for j in range(ny):
-                            for k in range(nz):
-                                if (i + j + k) % 2 != parity:
-                                    continue
-
-                                TxL = tx[i - 1][j][k] if i > 0 else 0.0
-                                TxR = tx[i][j][k] if i < nx - 1 else 0.0
-                                TyB = ty[i][j - 1][k] if j > 0 else 0.0
-                                TyT = ty[i][j][k] if j < ny - 1 else 0.0
-                                TzD = tz[i][j][k - 1] if k > 0 else 0.0
-                                TzU = tz[i][j][k] if k < nz - 1 else 0.0
-                                gD = gz[i][j][k - 1] if k > 0 else 0.0
-                                gU = gz[i][j][k] if k < nz - 1 else 0.0
-
-                                diag = (
-                                    B[i][j][k]
-                                    + TxL
-                                    + TxR
-                                    + TyB
-                                    + TyT
-                                    + TzD
-                                    + TzU
-                                    + well_diag[i][j][k]
-                                )
-                                rhs = rhs0[i][j][k] + well_rhs[i][j][k]
-
-                                if i > 0:
-                                    rhs += TxL * P_new[i - 1][j][k]
-                                if i < nx - 1:
-                                    rhs += TxR * P_new[i + 1][j][k]
-                                if j > 0:
-                                    rhs += TyB * P_new[i][j - 1][k]
-                                if j < ny - 1:
-                                    rhs += TyT * P_new[i][j + 1][k]
-                                # Φ = P + ρgz; flux from k to k+1 is
-                                # T·(P_k - P_{k+1} - ρgΔz).  Hence the lower
-                                # neighbour contributes (P_{k-1} - gD) and the
-                                # upper neighbour (P_{k+1} + gU).  The previous
-                                # signs were inverted, producing an unstable
-                                # (top-heavy) hydrostatic profile.
-                                if k > 0:
-                                    rhs += TzD * (P_new[i][j][k - 1] - gD)
-                                if k < nz - 1:
-                                    rhs += TzU * (P_new[i][j][k + 1] + gU)
-
-                                P_gs = rhs / max(diag, 1e-30)
-                                P_sor = (1.0 - self.omega) * P_new[i][j][k] + self.omega * P_gs
-                                P_sor = max(P_sor, 1.0e3)
-
-                                change = abs(P_sor - P_new[i][j][k])
-                                max_change = max(max_change, change)
-                                P_new[i][j][k] = P_sor
-
-                if max_change < self.tol_Pa:
-                    break
+            if self.linear_solver == "pcg":
+                P_new = self._solve_linear_pcg(B, rhs0, well_diag, well_rhs, tx, ty, tz, gz, Pk)
             else:
-                self._sor_failures += 1
+                P_new = [[list(Pk[i][j]) for j in range(ny)] for i in range(nx)]
+                for _it in range(self.max_iter):
+                    max_change = 0.0
+                    for parity in (0, 1):
+                        for i in range(nx):
+                            for j in range(ny):
+                                for k in range(nz):
+                                    if (i + j + k) % 2 != parity:
+                                        continue
+
+                                    TxL = tx[i - 1][j][k] if i > 0 else 0.0
+                                    TxR = tx[i][j][k] if i < nx - 1 else 0.0
+                                    TyB = ty[i][j - 1][k] if j > 0 else 0.0
+                                    TyT = ty[i][j][k] if j < ny - 1 else 0.0
+                                    TzD = tz[i][j][k - 1] if k > 0 else 0.0
+                                    TzU = tz[i][j][k] if k < nz - 1 else 0.0
+                                    gD = gz[i][j][k - 1] if k > 0 else 0.0
+                                    gU = gz[i][j][k] if k < nz - 1 else 0.0
+
+                                    diag = (
+                                        B[i][j][k]
+                                        + TxL
+                                        + TxR
+                                        + TyB
+                                        + TyT
+                                        + TzD
+                                        + TzU
+                                        + well_diag[i][j][k]
+                                    )
+                                    rhs = rhs0[i][j][k] + well_rhs[i][j][k]
+
+                                    if i > 0:
+                                        rhs += TxL * P_new[i - 1][j][k]
+                                    if i < nx - 1:
+                                        rhs += TxR * P_new[i + 1][j][k]
+                                    if j > 0:
+                                        rhs += TyB * P_new[i][j - 1][k]
+                                    if j < ny - 1:
+                                        rhs += TyT * P_new[i][j + 1][k]
+                                    # Φ = P + ρgz; flux from k to k+1 is
+                                    # T·(P_k - P_{k+1} - ρgΔz).  Hence the lower
+                                    # neighbour contributes (P_{k-1} - gD) and the
+                                    # upper neighbour (P_{k+1} + gU).  The previous
+                                    # signs were inverted, producing an unstable
+                                    # (top-heavy) hydrostatic profile.
+                                    if k > 0:
+                                        rhs += TzD * (P_new[i][j][k - 1] - gD)
+                                    if k < nz - 1:
+                                        rhs += TzU * (P_new[i][j][k + 1] + gU)
+
+                                    P_gs = rhs / max(diag, 1e-30)
+                                    P_sor = (1.0 - self.omega) * P_new[i][j][k] + self.omega * P_gs
+                                    P_sor = max(P_sor, 1.0e3)
+
+                                    change = abs(P_sor - P_new[i][j][k])
+                                    max_change = max(max_change, change)
+                                    P_new[i][j][k] = P_sor
+
+                    if max_change < self.tol_Pa:
+                        break
+                else:
+                    self._sor_failures += 1
 
             change = max(
                 abs(P_new[i][j][k] - Pk[i][j][k])
@@ -526,6 +536,7 @@ class UHSFieldScale3D:
                         dt_s=dt,
                         tau_s=self.tau_s,
                         eos=self.eos,
+                        exponent=self._n_exp[i][j][k],
                     )
                     for k in range(nz)
                 ]
@@ -563,6 +574,48 @@ class UHSFieldScale3D:
 
         return Pk, Tk, per_well
 
+    def _solve_linear_pcg(self, B, rhs0, well_diag, well_rhs, tx, ty, tz, gz, Pk):
+        """PCG solve of the 3D pressure system; index (i·ny + j)·nz + k."""
+        nx, ny, nz = self.nx, self.ny, self.nz
+
+        def idx(i: int, j: int, k: int) -> int:
+            return (i * ny + j) * nz + k
+
+        diag: list[float] = []
+        nbrs: list[list[tuple[int, float]]] = []
+        rhs: list[float] = []
+        x0: list[float] = []
+        for i in range(nx):
+            for j in range(ny):
+                for k in range(nz):
+                    links: list[tuple[int, float]] = []
+                    b_val = rhs0[i][j][k] + well_rhs[i][j][k]
+                    if i > 0:
+                        links.append((idx(i - 1, j, k), tx[i - 1][j][k]))
+                    if i < nx - 1:
+                        links.append((idx(i + 1, j, k), tx[i][j][k]))
+                    if j > 0:
+                        links.append((idx(i, j - 1, k), ty[i][j - 1][k]))
+                    if j < ny - 1:
+                        links.append((idx(i, j + 1, k), ty[i][j][k]))
+                    # Gravity: flux k -> k+1 is T·(P_k − P_{k+1} − ρgΔz) (see SOR branch).
+                    if k > 0:
+                        links.append((idx(i, j, k - 1), tz[i][j][k - 1]))
+                        b_val -= tz[i][j][k - 1] * gz[i][j][k - 1]
+                    if k < nz - 1:
+                        links.append((idx(i, j, k + 1), tz[i][j][k]))
+                        b_val += tz[i][j][k] * gz[i][j][k]
+                    diag.append(B[i][j][k] + sum(t for _, t in links) + well_diag[i][j][k])
+                    nbrs.append(links)
+                    rhs.append(b_val)
+                    x0.append(Pk[i][j][k])
+        x, ok = pcg_solve(diag, nbrs, rhs, x0, self.tol_Pa, self.max_iter)
+        if not ok:
+            self._sor_failures += 1
+        return [
+            [[max(x[idx(i, j, k)], 1.0e3) for k in range(nz)] for j in range(ny)] for i in range(nx)
+        ]
+
     def _solve_pressure(
         self,
         P_old: list[list[list[float]]],
@@ -583,6 +636,14 @@ class UHSFieldScale3D:
         overwritten, so rates, BHPs and mass remain consistent.
         """
         nx, ny, nz = self.nx, self.ny, self.nz
+        # Isentropic exponent at the start-of-step state, reused by every Picard iteration.
+        self._n_exp = [
+            [
+                [isentropic_exponent(T_old[i][j][k], P_old[i][j][k], self.eos) for k in range(nz)]
+                for j in range(ny)
+            ]
+            for i in range(nx)
+        ]
         tx = [
             [
                 [self._Tx(P_old, T_old, i, j, k) if i < nx - 1 else 0.0 for k in range(nz)]

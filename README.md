@@ -5,14 +5,14 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 67/67 Passed](https://img.shields.io/badge/tests-67%2F67%20passed-brightgreen.svg)](tests/)
+[![Tests: 71/71 Passed](https://img.shields.io/badge/tests-71%2F71%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
 - **0D Tier**: Lumped material balance with an exact mass-state step, active BHP/rate control, and Monte Carlo uncertainty quantification (UQ) with log-normal permeability and truncated-normal porosity, thickness, area and temperature.
 - **1D Tier**: Radial finite-volume model on logarithmic grids with implicit Thomas algorithm solving near-wellbore transient drawdowns and buildups.
-- **2D Tier**: Areal Cartesian grid with implicit finite volumes and Gauss-Seidel SOR ($\omega = 1.5$), Picard iteration, and multi-well interference/permeability channeling.
-- **3D Tier**: Field-scale Cartesian grid with red-black Gauss-Seidel SOR, layer stratigraphy, and buoyant gravity segregation ($+\rho_{\text{harm}} g \Delta z$).
+- **2D Tier**: Areal Cartesian grid with implicit finite volumes, a Jacobi-preconditioned conjugate-gradient pressure solver (`linear_solver="sor"` selects Gauss-Seidel SOR), Picard iteration, and multi-well interference/permeability channeling.
+- **3D Tier**: Field-scale Cartesian grid with the same PCG pressure solver (red-black SOR optional), layer stratigraphy, and buoyant gravity segregation ($+\rho_{\text{harm}} g \Delta z$).
 
 ---
 
@@ -179,7 +179,7 @@ H2MultiSim/
 │   └── bench_analytical_1d.py  # Al-Hussainy real-gas pseudopressure radial line-source benchmark
 ├── src/
 │   └── h2multisim/
-│       ├── __init__.py         # Public API and package version (1.4.0)
+│       ├── __init__.py         # Public API and package version (1.5.0)
 │       ├── __main__.py         # Module execution entrypoint
 │       ├── cli.py              # Unified CLI (run, export-deck, test)
 │       ├── config.py           # JSON/YAML run configuration loader
@@ -190,7 +190,7 @@ H2MultiSim/
 │           ├── __init__.py     # Multi-scale exports
 │           ├── zero_d.py       # 0D lumped material balance & Monte Carlo UQ
 │           ├── one_d.py        # 1D radial finite-volume & Thomas solver
-│           ├── two_d.py        # 2D areal SOR implicit multi-well model
+│           ├── two_d.py        # 2D areal implicit multi-well model (PCG/SOR)
 │           └── three_d.py      # 3D field-scale model with gravity segregation
 ├── tests/
 │   ├── __init__.py

@@ -38,3 +38,58 @@ def check_inputs(
     for name, val in (fraction or {}).items():
         if not (math.isfinite(val) and 0.0 < val <= 1.0):
             raise ValueError(f"{where}: {name} must be in (0, 1], got {val!r}")
+
+
+def pcg_solve(
+    diag: list[float],
+    nbrs: list[list[tuple[int, float]]],
+    b: list[float],
+    x0: list[float],
+    tol: float,
+    max_iter: int,
+) -> tuple[list[float], bool]:
+    """
+    Jacobi-preconditioned conjugate gradients for the symmetric positive-definite
+    finite-volume pressure system ``diag[i]·x[i] − Σ_(j,T) T·x[j] = b[i]``.
+
+    Converged when the Jacobi-scaled residual ``max |r_i| / diag_i`` (the pressure
+    correction a point-Jacobi sweep would make, in the units of ``x``) is below
+    ``tol``.  Returns ``(x, converged)``.
+    """
+    n = len(b)
+    x = list(x0)
+    inv_d = [1.0 / max(d, 1e-300) for d in diag]
+
+    def matvec(v: list[float]) -> list[float]:
+        out = [0.0] * n
+        for i in range(n):
+            acc = diag[i] * v[i]
+            for j, t in nbrs[i]:
+                acc -= t * v[j]
+            out[i] = acc
+        return out
+
+    ax = matvec(x)
+    r = [b[i] - ax[i] for i in range(n)]
+    if max(abs(r[i]) * inv_d[i] for i in range(n)) < tol:
+        return x, True
+    z = [r[i] * inv_d[i] for i in range(n)]
+    p = list(z)
+    rz = sum(r[i] * z[i] for i in range(n))
+    for _ in range(max_iter):
+        ap = matvec(p)
+        pap = sum(p[i] * ap[i] for i in range(n))
+        if pap <= 0.0 or not math.isfinite(pap):
+            return x, False
+        alpha = rz / pap
+        for i in range(n):
+            x[i] += alpha * p[i]
+            r[i] -= alpha * ap[i]
+        if max(abs(r[i]) * inv_d[i] for i in range(n)) < tol:
+            return x, True
+        z = [r[i] * inv_d[i] for i in range(n)]
+        rz_new = sum(r[i] * z[i] for i in range(n))
+        beta = rz_new / rz
+        rz = rz_new
+        p = [z[i] + beta * p[i] for i in range(n)]
+    return x, False

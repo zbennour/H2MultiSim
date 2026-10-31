@@ -505,20 +505,33 @@ def adiabatic_temperature(
 
     evaluated at the initial state (n → (γ−1)/γ for an ideal gas).
     """
-    if eos is None:
-        eos = PengRobinsonH2()
     T_init = max(float(T_old), 50.0)
     P_init = max(float(P_old), 1.0)
     P_final = max(float(P_new), 1.0)
     if P_final == P_init:
         return T_init
-    dT = max(T_init * 1e-4, 0.01)
-    Z = eos.z_factor(P_init, T_init)
-    dZ_dT = (eos.z_factor(P_init, T_init + dT) - eos.z_factor(P_init, T_init - dT)) / (2.0 * dT)
-    Cp = cp_real_h2(T_init, P_init, eos)
-    n = R_UNIVERSAL * (Z + T_init * dZ_dT) / max(Cp, 1.0)
-    n = min(max(n, 0.05), 0.5)
+    n = isentropic_exponent(T_init, P_init, eos)
     return float(max(T_init * (P_final / P_init) ** n, 50.0))
+
+
+def isentropic_exponent(
+    T: float, P: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None
+) -> float:
+    """
+    Real-gas isentropic exponent n = (∂lnT/∂lnP)_S = R·(Z + T·(∂Z/∂T)_P) / Cp,
+    clamped to [0.05, 0.5].  Depends only on the state, so grid solvers compute
+    it once per cell per time step (see :func:`coupled_temperature_update`).
+    """
+    if eos is None:
+        eos = PengRobinsonH2()
+    T_val = max(float(T), 50.0)
+    P_val = max(float(P), 1.0)
+    dT = max(T_val * 1e-4, 0.01)
+    Z = eos.z_factor(P_val, T_val)
+    dZ_dT = (eos.z_factor(P_val, T_val + dT) - eos.z_factor(P_val, T_val - dT)) / (2.0 * dT)
+    Cp = cp_real_h2(T_val, P_val, eos)
+    n = R_UNIVERSAL * (Z + T_val * dZ_dT) / max(Cp, 1.0)
+    return min(max(n, 0.05), 0.5)
 
 
 def thermal_relaxation_update(
@@ -541,13 +554,22 @@ def coupled_temperature_update(
     dt_s: float,
     tau_s: float,
     eos: PengRobinsonH2 | PengRobinsonMixture | None = None,
+    exponent: float | None = None,
 ) -> float:
     """
     Coupled two-stage thermal update:
     1. Adiabatic isentropic response to pressure change
     2. Conductive thermal relaxation toward geothermal rock temperature
+
+    ``exponent`` is a precomputed :func:`isentropic_exponent` at (T_old, P_old);
+    passing it avoids re-evaluating the EOS when only P_new changes.
     """
-    T_ad = adiabatic_temperature(T_old, P_old, P_new, eos)
+    if exponent is None:
+        T_ad = adiabatic_temperature(T_old, P_old, P_new, eos)
+    else:
+        T_init = max(float(T_old), 50.0)
+        P_init = max(float(P_old), 1.0)
+        T_ad = max(T_init * (max(float(P_new), 1.0) / P_init) ** exponent, 50.0)
     return thermal_relaxation_update(T_ad, T_geothermal, dt_s, tau_s)
 
 
