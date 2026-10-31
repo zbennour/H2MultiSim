@@ -51,7 +51,9 @@ from h2multisim.thermo import (
     cp_ideal_h2,
     cp_real_h2,
     cp_specific_real_h2,
+    enthalpy_molar,
     gamma_real_h2,
+    internal_energy_molar,
     joule_thomson_coefficient,
     normalize_composition,
     thermal_relaxation_update,
@@ -81,7 +83,7 @@ from h2multisim.units import (
     tonnes_to_kg,
 )
 
-__version__ = "1.3.3"
+__version__ = "1.4.0"
 __all__ = [
     "__version__",
     # Main multi-scale simulators
@@ -127,6 +129,8 @@ __all__ = [
     "coupled_temperature_update",
     "cp_ideal_h2",
     "cp_real_h2",
+    "enthalpy_molar",
+    "internal_energy_molar",
     "cp_specific_real_h2",
     # Units
     "pa_to_bar",

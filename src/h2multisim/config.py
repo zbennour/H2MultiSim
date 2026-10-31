@@ -187,6 +187,12 @@ def _props_0d(d: dict[str, Any]) -> ReservoirProperties:
         swr=float(d.get("swr", 0.0)),
         sgc=float(d.get("sgc", 0.0)),
         rel_perm=rel_perm,
+        thermal_model=str(d.get("thermal_model", "energy_balance")),
+        injection_temperature=(
+            float(d["injection_temperature"])
+            if d.get("injection_temperature") is not None
+            else None
+        ),
     )
 
 
