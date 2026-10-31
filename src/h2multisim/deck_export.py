@@ -7,9 +7,12 @@ Allows head-to-head benchmarking of H2MultiSim simulations with open-source OPM 
 (Open Porous Media) and commercial ECLIPSE 100/300 reservoir simulators.
 
 Exports:
-- RUNSPEC: dry-gas metric simulation setup, timing, dimensions, and units.
+- RUNSPEC: gas-water metric simulation setup (water at connate saturation, immobile),
+  timing, dimensions, and units.  OPM Flow has no single-phase gas mode.
 - GRID: Cartesian or radial grid dimensions, tops, porosity, and anisotropic permeability.
-- PROPS: NIST/PR-EOS derived PVDG gas PVT table (P, Bg, μ), rock compressibility, surface density.
+- PROPS: NIST/PR-EOS derived PVDG gas PVT table (P, Bg, μ), PVTW, SGWFN gas-water
+  relative permeability from the solver's RelativePermeabilityModel, rock compressibility,
+  surface densities.
 - REGIONS: Fluid-in-place zoning.
 - SOLUTION: Initial pressure field and hydrostatic datum.
 - SCHEDULE: Well specifications (WELSPECS), perforation intervals (COMPDAT), controls
@@ -20,6 +23,7 @@ Zero external runtime dependencies.
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -34,23 +38,91 @@ P_STD_PA: float = 101325.0
 T_STD_K: float = 288.15
 
 
-def _gas_equivalent_factors(props: object) -> tuple[float, float]:
-    """
-    Porosity and permeability multipliers the H2MultiSim solvers apply for
-    immobile water (``swr``/``sgc``/``rel_perm``), so the single-phase GAS deck
-    sees the same gas-accessible pore volume and effective gas permeability.
-    """
-    rel = getattr(props, "rel_perm", None) or RelativePermeabilityModel(
+def _rel_perm_of(props: object) -> RelativePermeabilityModel:
+    """The two-phase model the H2MultiSim solvers build for ``props``."""
+    return getattr(props, "rel_perm", None) or RelativePermeabilityModel(
         swr=float(getattr(props, "swr", 0.0)), sgc=float(getattr(props, "sgc", 0.0))
     )
-    return rel.effective_porosity_factor(), rel.effective_permeability_factor()
+
+
+def _initial_saturations(props: object) -> tuple[float, float]:
+    """(S_w, S_g) the solvers assume: gas fills the gas-accessible pore fraction."""
+    s_g = _rel_perm_of(props).effective_porosity_factor()
+    return 1.0 - s_g, s_g
 
 
 _DECK_HEADER_NOTE = (
-    "-- Equivalence notes: isothermal deck (H2MultiSim's adiabatic/relaxation thermal\n"
-    "-- model is not represented); PORO/PERM* include the solver's immobile-water\n"
-    "-- factors; ROCK carries the solver's pore compressibility Ct."
+    "-- Equivalence notes: gas-water deck with immobile connate water at the solver's\n"
+    "-- S_wr (OPM Flow has no single-phase gas mode); SGWFN reproduces the solver's\n"
+    "-- k_rg(S_g) with zero capillary pressure; ROCK carries the solver's pore\n"
+    "-- compressibility Ct.  Isothermal: H2MultiSim's adiabatic/relaxation thermal\n"
+    "-- model is not represented."
 )
+
+# RUNSPEC phases.  TABDIMS: NTSFUN NTPVT NSSFUN NPPVT.
+_PHASE_LINES: tuple[str, ...] = ("WATER", "GAS", "METRIC", "", "TABDIMS", "  1 1 50 50 /")
+
+# Brine PVTW: Pref [bar] Bw [rm3/sm3] Cw [1/bar] mu_w [cP] Cv [1/bar]
+_PVTW_LINE = "  {p_ref:.2f} 1.0 4.5e-05 0.5 0.0 /"
+
+
+def _props_lines(
+    props: object,
+    rho_std: float,
+    pvdg: list[tuple[float, float, float]],
+    p_init_bar: float,
+    c_rock_1_bar: float,
+    n_sat: int = 21,
+) -> list[str]:
+    """PROPS section body: densities, rock, water/gas PVT and the SGWFN table."""
+    rel = _rel_perm_of(props)
+    sg_max = 1.0 - rel.swr
+    lines = [
+        "DENSITY",
+        f"  800.0 1000.0 {rho_std:.5f} /",
+        "",
+        "ROCK",
+        f"  {p_init_bar:.2f} {c_rock_1_bar:.2e} /",
+        "",
+        "PVTW",
+        _PVTW_LINE.format(p_ref=p_init_bar),
+        "",
+        "PVDG",
+    ]
+    lines.extend(f"  {p:8.2f} {bg:14.6e} {mu:10.5f}" for p, bg, mu in pvdg)
+    lines.extend(["/", "", "SGWFN", "-- Sg        krg          krw          Pcgw"])
+    sg_pts = sorted({sg_max * i / (n_sat - 1) for i in range(n_sat)} | {rel.sgc})
+    for sg in sg_pts:
+        krg = rel.krg(sg)
+        krw = rel.krw(1.0 - sg)
+        lines.append(f"  {sg:.6f} {krg:.6f} {krw:.6f} 0.0")
+    lines.extend(["/", ""])
+    return lines
+
+
+# Field/well vectors needed to compare against H2MultiSim time series.
+_SUMMARY_LINES: tuple[str, ...] = (
+    "SUMMARY",
+    "",
+    "FPR",
+    "FGIP",
+    "FGIR",
+    "FGPR",
+    "FGIT",
+    "FGPT",
+    "WBHP",
+    "/",
+    "WGIR",
+    "/",
+    "WGPR",
+    "/",
+    "",
+)
+
+
+def _saturation_init_lines(props: object, n_cells: int) -> list[str]:
+    s_w, s_g = _initial_saturations(props)
+    return ["SWAT", f"  {n_cells}*{s_w:.6f} /", "SGAS", f"  {n_cells}*{s_g:.6f} /", ""]
 
 
 def _wconprod_line(name: str, bhp_bar: float, q_sm3_d: float) -> str:
@@ -117,7 +189,6 @@ def export_eclipse_2d(
     dy = props.Ly / ny
     p_init_bar = pa_to_bar(props.P_init)
     c_rock_1_bar = props.Ct * 1e5
-    phi_f, krg = _gas_equivalent_factors(props)
 
     lines: list[str] = [
         "-- Generated by H2MultiSim Industry Benchmark Bridge",
@@ -132,8 +203,7 @@ def export_eclipse_2d(
         "DIMENS",
         f"  {nx} {ny} 1 /",
         "",
-        "GAS",
-        "METRIC",
+        *_PHASE_LINES,
         "",
         "START",
         "  1 'JAN' 2026 /",
@@ -156,26 +226,26 @@ def export_eclipse_2d(
         f"  {nx * ny}*1000.0 /",
         "",
         "PORO",
-        f"  {nx * ny}*{props.phi * phi_f:.4f} /",
+        f"  {nx * ny}*{props.phi:.4f} /",
         "",
     ]
 
     # Permeability field
     if props.k_field is not None:
-        perm_vals = [m2_to_mD(props.k_field[i][j]) * krg for j in range(ny) for i in range(nx)]
+        perm_vals = [m2_to_mD(props.k_field[i][j]) for j in range(ny) for i in range(nx)]
         lines.append("PERMX")
         lines.append("  " + " ".join(f"{k:.2f}" for k in perm_vals) + " /")
         lines.append("PERMY")
         lines.append("  " + " ".join(f"{k:.2f}" for k in perm_vals) + " /")
     else:
-        k_mD = m2_to_mD(props.k) * krg
+        k_mD = m2_to_mD(props.k)
         lines.append("PERMX")
         lines.append(f"  {nx * ny}*{k_mD:.2f} /")
         lines.append("PERMY")
         lines.append(f"  {nx * ny}*{k_mD:.2f} /")
 
     # Single-layer grid: PERMZ has no effect on the flow solution.
-    k_vert = m2_to_mD(props.k) * krg * 0.1
+    k_vert = m2_to_mD(props.k) * 0.1
     lines.extend(
         [
             "PERMZ",
@@ -183,22 +253,11 @@ def export_eclipse_2d(
             "",
             "PROPS",
             "",
-            "DENSITY",
-            f"  800.0 1000.0 {rho_std:.5f} /",
-            "",
-            "ROCK",
-            f"  {p_init_bar:.2f} {c_rock_1_bar:.2e} /",
-            "",
-            "PVDG",
         ]
     )
-
-    for p, bg, mu in pvdg:
-        lines.append(f"  {p:8.2f} {bg:14.6e} {mu:10.5f}")
+    lines.extend(_props_lines(props, rho_std, pvdg, p_init_bar, c_rock_1_bar))
     lines.extend(
         [
-            "/",
-            "",
             "REGIONS",
             "",
             "FIPNUM",
@@ -209,6 +268,8 @@ def export_eclipse_2d(
             "PRESSURE",
             f"  {nx * ny}*{p_init_bar:.2f} /",
             "",
+            *_saturation_init_lines(props, nx * ny),
+            *_SUMMARY_LINES,
             "SCHEDULE",
             "",
             "RPTRST",
@@ -294,7 +355,6 @@ def export_eclipse_3d(
     p_init_bar = pa_to_bar(props.P_init)
     c_rock_1_bar = props.Ct * 1e5
     z_datum = 1000.0 + props.Lz * 0.5  # Mid-depth datum matching H2MultiSim
-    phi_f, krg = _gas_equivalent_factors(props)
 
     # H2MultiSim layer k = 0 is the BOTTOM layer; ECLIPSE K = 1 is the TOP layer.
     def _deck_k(k_solver: int) -> int:
@@ -313,8 +373,7 @@ def export_eclipse_3d(
         "DIMENS",
         f"  {nx} {ny} {nz} /",
         "",
-        "GAS",
-        "METRIC",
+        *_PHASE_LINES,
         "",
         "START",
         "  1 'JAN' 2026 /",
@@ -337,7 +396,7 @@ def export_eclipse_3d(
         f"  {nx * ny}*1000.0 /",
         "",
         "PORO",
-        f"  {nx * ny * nz}*{props.phi * phi_f:.4f} /",
+        f"  {nx * ny * nz}*{props.phi:.4f} /",
         "",
     ]
 
@@ -346,14 +405,14 @@ def export_eclipse_3d(
     if props.k_layers is not None:
         k_x_vals: list[str] = []
         for k in reversed(range(nz)):  # deck order: top layer first
-            kl_mD = m2_to_mD(props.k_layers[k]) * krg
+            kl_mD = m2_to_mD(props.k_layers[k])
             k_x_vals.append(f"  {nx * ny}*{kl_mD:.2f}")
         for kw in ("PERMX", "PERMY", "PERMZ"):
             lines.append(kw)
             lines.extend(k_x_vals)
             lines.append("  /")
     else:
-        k_mD = m2_to_mD(props.k) * krg
+        k_mD = m2_to_mD(props.k)
         for kw in ("PERMX", "PERMY", "PERMZ"):
             lines.append(kw)
             lines.append(f"  {nx * ny * nz}*{k_mD:.2f} /")
@@ -363,22 +422,11 @@ def export_eclipse_3d(
             "",
             "PROPS",
             "",
-            "DENSITY",
-            f"  800.0 1000.0 {rho_std:.5f} /",
-            "",
-            "ROCK",
-            f"  {p_init_bar:.2f} {c_rock_1_bar:.2e} /",
-            "",
-            "PVDG",
         ]
     )
-
-    for p, bg, mu in pvdg:
-        lines.append(f"  {p:8.2f} {bg:14.6e} {mu:10.5f}")
+    lines.extend(_props_lines(props, rho_std, pvdg, p_init_bar, c_rock_1_bar))
     lines.extend(
         [
-            "/",
-            "",
             "REGIONS",
             "",
             "FIPNUM",
@@ -390,6 +438,7 @@ def export_eclipse_3d(
             "-- datum_depth   datum_pressure   woc_depth   woc_Pcap   goc_depth   goc_Pcap",
             f"   {z_datum:.2f}     {p_init_bar:.2f}        2000.0      0.0        0.0         0.0 /",
             "",
+            *_SUMMARY_LINES,
             "SCHEDULE",
             "",
             "RPTRST",
@@ -456,7 +505,16 @@ def export_eclipse_1d_radial(
     title: str = "H2MultiSim 1D Radial Benchmark",
     eos: PengRobinsonH2 | None = None,
 ) -> None:
-    """Export 1D radial reservoir scenario to an ECLIPSE / OPM Flow .DATA deck using RADIAL grid."""
+    """
+    Export a 1D radial scenario to an ECLIPSE / OPM Flow .DATA deck.
+
+    The radial finite-volume model is written as an N x 1 x 1 Cartesian strip whose
+    pore volumes (``PORV``) and inter-cell transmissibilities (``TRANX``) are set in
+    the EDIT section to the exact values of H2MultiSim's logarithmic radial grid,
+    and whose well connection factor uses the same equivalent radius.  This avoids
+    simulator-specific ``RADIAL`` grid handling (OPM Flow builds the cylindrical
+    grid but does not connect the well to it).
+    """
     os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
     if eos is None:
         vt = getattr(
@@ -474,11 +532,22 @@ def export_eclipse_1d_radial(
     from h2multisim.models.one_d import build_log_grid
 
     r_c, r_i = build_log_grid(props.r_well, props.r_ext, N)
+    # Well connection factor [cP·rm³/day/bar], same equivalent radius as UHSRadial1D:
+    # CF = 2π·C·k·h / max(ln(r_c0/r_w) + S, 0.1), C = 0.008527 (METRIC Darcy constant).
+    ln_term = max(math.log(max(r_c[0], props.r_well * 1.001) / props.r_well) + props.skin, 0.1)
+    cf_well = 2.0 * math.pi * 0.008527 * m2_to_mD(props.k) * props.h / ln_term
     dr_vals = [r_i[i + 1] - r_i[i] for i in range(N)]
+    k_mD_raw = m2_to_mD(props.k)
+    # Exact radial FV quantities (UHSRadial1D): V_i = π(r_{i+1/2}² − r_{i−1/2}²)·h,
+    # T_{i,i+1} = 2π·C·k·h / ln(r_{c,i+1}/r_{c,i}).
+    porv = [math.pi * (r_i[i + 1] ** 2 - r_i[i] ** 2) * props.h * props.phi for i in range(N)]
+    tranx = [
+        2.0 * math.pi * 0.008527 * k_mD_raw * props.h / math.log(r_c[i + 1] / r_c[i])
+        for i in range(N - 1)
+    ] + [0.0]
     p_init_bar = pa_to_bar(props.P_init)
     c_rock_1_bar = props.Ct * 1e5
-    phi_f, krg = _gas_equivalent_factors(props)
-    k_mD = m2_to_mD(props.k) * krg
+    k_mD = m2_to_mD(props.k)
 
     lines: list[str] = [
         "-- Generated by H2MultiSim Industry Benchmark Bridge",
@@ -493,9 +562,7 @@ def export_eclipse_1d_radial(
         "DIMENS",
         f"  {N} 1 1 /",
         "",
-        "RADIAL",
-        "GAS",
-        "METRIC",
+        *_PHASE_LINES,
         "",
         "START",
         "  1 'JAN' 2026 /",
@@ -508,15 +575,10 @@ def export_eclipse_1d_radial(
         "",
         "GRID",
         "",
-        "INRAD",
-        f"  {props.r_well:.3f} /",
-        "",
-        "DRV",
-        "  " + " ".join(f"{dr:.3f}" for dr in dr_vals) + " /",
-        "",
-        "DTHETAV",
-        "  360.0 /",
-        "",
+        "DXV",
+        "  " + " ".join(f"{dr:.4f}" for dr in dr_vals) + " /",
+        "DYV",
+        "  1.0 /",
         "DZV",
         f"  1*{props.h:.2f} /",
         "",
@@ -524,32 +586,31 @@ def export_eclipse_1d_radial(
         f"  {N}*1000.0 /",
         "",
         "PORO",
-        f"  {N}*{props.phi * phi_f:.4f} /",
+        f"  {N}*{props.phi:.4f} /",
         "",
-        "PERMR",
+        "PERMX",
         f"  {N}*{k_mD:.2f} /",
-        "PERMTHT",
+        "PERMY",
         f"  {N}*{k_mD:.2f} /",
         "PERMZ",
-        f"  {N}*{k_mD * 0.1:.2f} /",
+        f"  {N}*{k_mD:.2f} /",
+        "",
+        "EDIT",
+        "",
+        "-- Exact radial pore volumes [rm3] and transmissibilities [cP.rm3/day/bar]",
+        "PORV",
+        *(f"  {v:.6e}" for v in porv),
+        "/",
+        "TRANX",
+        *(f"  {t:.6e}" for t in tranx),
+        "/",
         "",
         "PROPS",
         "",
-        "DENSITY",
-        f"  800.0 1000.0 {rho_std:.5f} /",
-        "",
-        "ROCK",
-        f"  {p_init_bar:.2f} {c_rock_1_bar:.2e} /",
-        "",
-        "PVDG",
     ]
-
-    for p, bg, mu in pvdg:
-        lines.append(f"  {p:8.2f} {bg:14.6e} {mu:10.5f}")
+    lines.extend(_props_lines(props, rho_std, pvdg, p_init_bar, c_rock_1_bar))
     lines.extend(
         [
-            "/",
-            "",
             "REGIONS",
             "",
             "FIPNUM",
@@ -560,6 +621,8 @@ def export_eclipse_1d_radial(
             "PRESSURE",
             f"  {N}*{p_init_bar:.2f} /",
             "",
+            *_saturation_init_lines(props, N),
+            *_SUMMARY_LINES,
             "SCHEDULE",
             "",
             "RPTRST",
@@ -572,8 +635,10 @@ def export_eclipse_1d_radial(
             "/",
             "",
             "COMPDAT",
-            # Items: well I J K1 K2 status SATNUM CF diameter Kh skin
-            f"  'W1' 1 1 1 1 'OPEN' 2* {props.r_well * 2.0:.3f} 1* {props.skin:.3f} /",
+            # Items: well I J K1 K2 status SATNUM CF diameter Kh skin.  The connection
+            # factor is explicit: on a radial grid OPM's Peaceman estimate of r_o can fall
+            # inside the wellbore and the well becomes non-finite.
+            f"  'W1' 1 1 1 1 'OPEN' 1* {cf_well:.6e} {props.r_well * 2.0:.3f} 1* {props.skin:.3f} /",
             "/",
             "",
         ]

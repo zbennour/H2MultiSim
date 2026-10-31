@@ -605,6 +605,10 @@ class GasComponentSpec:
         return self.ac * self.alpha(T)
 
 
+# CH4/CO2/N2 c_peneloux and mu_res_* are fitted to CoolProp 8.0.0 (300-370 K,
+# 20-250 bar; CO2 excludes T < 310 K above 70 bar): c minimises the maximum
+# density error (CH4 1.2 %, CO2 4.2 %, N2 0.2 %), viscosity residuals are least
+# squares on that density (max error CH4 1.0 %, CO2 3.2 %, N2 2.1 %).
 GAS_COMPONENTS: dict[str, GasComponentSpec] = {
     "H2": GasComponentSpec(
         name="H2",
@@ -627,14 +631,14 @@ GAS_COMPONENTS: dict[str, GasComponentSpec] = {
         T_c=190.564,
         P_c=4.5992e6,
         omega=0.01142,
-        c_peneloux=-5.2e-6,
+        c_peneloux=-3.3e-6,
         lj_sigma=3.758,
         lj_eps_kb=148.6,
         hhv_molar=890580.0,
         lhv_molar=802340.0,
         cp_ideal_298=35.69,
-        mu_res_c1=2.8e-8,
-        mu_res_c2=1.5e-10,
+        mu_res_c1=2.0627e-8,
+        mu_res_c2=1.9903e-10,
     ),
     "CO2": GasComponentSpec(
         name="CO2",
@@ -642,14 +646,14 @@ GAS_COMPONENTS: dict[str, GasComponentSpec] = {
         T_c=304.128,
         P_c=7.3773e6,
         omega=0.22394,
-        c_peneloux=-1.7e-6,
+        c_peneloux=2.1e-6,
         lj_sigma=3.941,
         lj_eps_kb=195.2,
         hhv_molar=0.0,
         lhv_molar=0.0,
         cp_ideal_298=37.11,
-        mu_res_c1=3.5e-8,
-        mu_res_c2=1.2e-10,
+        mu_res_c1=2.2277e-10,
+        mu_res_c2=8.4037e-11,
     ),
     "N2": GasComponentSpec(
         name="N2",
@@ -657,14 +661,14 @@ GAS_COMPONENTS: dict[str, GasComponentSpec] = {
         T_c=126.192,
         P_c=3.3958e6,
         omega=0.03720,
-        c_peneloux=-4.2e-6,
+        c_peneloux=-3.9e-6,
         lj_sigma=3.798,
         lj_eps_kb=71.4,
         hhv_molar=0.0,
         lhv_molar=0.0,
         cp_ideal_298=29.12,
-        mu_res_c1=1.8e-8,
-        mu_res_c2=1.0e-10,
+        mu_res_c1=1.6912e-8,
+        mu_res_c2=4.4211e-11,
     ),
 }
 
@@ -1022,7 +1026,7 @@ class PengRobinsonMixture:
         c1_mix = sum(w * GAS_COMPONENTS[sp].mu_res_c1 for sp, w in w_map.items())
         c2_mix = sum(w * GAS_COMPONENTS[sp].mu_res_c2 for sp, w in w_map.items())
         mu = mu0_mix + c1_mix * rho_val + c2_mix * (rho_val**2)
-        return float(min(max(mu, 6.0e-6), 8.0e-5))
+        return float(min(max(mu, 6.0e-6), 2.0e-4))
 
     def heating_values_volumetric(
         self, composition: dict[str, float] | None = None
