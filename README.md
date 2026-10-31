@@ -49,6 +49,7 @@ transfer or regulatory reporting.
 > For the complete quantitative benchmark report across all three tiers (**Tier 1: NIST/CoolProp 8.0.0**, **Tier 2: Al-Hussainy (1966) analytical pseudopressure**, and **Tier 3: OPM Flow & ECLIPSE cross-simulator decks**), see [BENCHMARKS.md](BENCHMARKS.md).
 >
 > What each tier does **not** model, and the validated accuracy envelope, are listed in [LIMITATIONS.md](LIMITATIONS.md).
+> The changes made after the v1.3.0 audit, and the reasoning behind each, are summarised in [REMEDIATION_NOTES.md](REMEDIATION_NOTES.md).
 
 | Metric | Condition | Reference (CoolProp) | H2MultiSim™ | Error |
 | :--- | :--- | :--- | :--- | :--- |
