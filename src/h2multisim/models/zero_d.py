@@ -17,8 +17,11 @@ from typing import Callable
 from h2multisim.thermo import (
     IsothermModel,
     PengRobinsonH2,
+    PengRobinsonMixture,
     PoreVolumeModel,
+    RelativePermeabilityModel,
     coupled_temperature_update,
+    normalize_composition,
     viscosity_h2,
 )
 from h2multisim.units import (
@@ -61,6 +64,17 @@ class ReservoirProperties:
     m_sorbent: float = 0.0  # kg sorbent mass for MOF/adsorbent storage
     volume_translation: float = 0.0  # m³/mol Peneloux volume translation (e.g. -4.0e-6)
     peneloux: bool = False  # If True and volume_translation == 0, sets volume_translation = -4.0e-6
+    cushion_gas: str = "H2"  # Native cushion gas species ('H2', 'CH4', 'CO2', 'N2')
+    initial_composition: dict[str, float] | None = None  # Optional initial mole fractions
+    injected_composition: dict[str, float] | None = None  # Optional injected stream mole fractions
+    plume_segregation: float = (
+        0.0  # [0, 1] buoyant plume segregation during withdrawal (0 = well-mixed)
+    )
+    swr: float = 0.0  # [-] connate / residual immobile water saturation S_wr
+    sgc: float = 0.0  # [-] critical / trapped gas saturation S_gc
+    rel_perm: RelativePermeabilityModel | None = (
+        None  # Optional two-phase relative permeability model
+    )
 
     def __post_init__(self) -> None:
         if self.peneloux and self.volume_translation == 0.0:
@@ -78,6 +92,7 @@ class ReservoirState:
     pressure: float  # Pa
     temperature: float  # K
     mass: float  # kg
+    composition: dict[str, float] | None = None  # Active mole-fraction composition
 
 
 @dataclass
@@ -104,6 +119,9 @@ class SimulationResult:
     temperatures: list[float] = field(default_factory=list)  # K
     masses: list[float] = field(default_factory=list)  # kg
     mass_rates: list[float] = field(default_factory=list)  # kg/s
+    h2_mole_fractions: list[float] = field(default_factory=list)  # [-] H2 mole fraction y_H2(t)
+    wobbe_indices: list[float] = field(default_factory=list)  # MJ/sm³ Wobbe Index
+    hhv_values: list[float] = field(default_factory=list)  # MJ/sm³ volumetric HHV
     metrics: dict[str, float] = field(default_factory=dict)
 
 
@@ -114,28 +132,69 @@ SimulationResult0D = SimulationResult
 class UHSReservoir0D:
     """
     Zero-dimensional lumped-parameter UHS reservoir model.
-    Solves the coupled nonlinear mass-balance root at each time step.
+    Solves the coupled nonlinear mass-balance root at each time step,
+    including multicomponent cushion-gas dilution (H2 / CH4 / CO2 / N2).
     """
 
     def __init__(
         self,
         props: ReservoirProperties,
-        eos: PengRobinsonH2 | None = None,
+        eos: PengRobinsonH2 | PengRobinsonMixture | None = None,
         tau_days: float | None = None,
     ) -> None:
         self.props = props
+        cg = getattr(props, "cushion_gas", "H2") or "H2"
+        init_comp = normalize_composition(getattr(props, "initial_composition", None) or {cg: 1.0})
+        inj_comp = normalize_composition(
+            getattr(props, "injected_composition", None) or {"H2": 1.0}
+        )
+        self._init_comp: dict[str, float] = init_comp
+        self._inj_comp: dict[str, float] = inj_comp
+        self._is_multicomponent: bool = not (
+            len(init_comp) == 1 and "H2" in init_comp and len(inj_comp) == 1 and "H2" in inj_comp
+        )
+
         if eos is None:
             vt = getattr(props, "volume_translation", 0.0)
-            self.eos = PengRobinsonH2(volume_translation=vt)
+            if self._is_multicomponent:
+                self.eos: PengRobinsonH2 | PengRobinsonMixture = PengRobinsonMixture(
+                    composition=init_comp,
+                    peneloux=getattr(props, "peneloux", False),
+                    volume_translation=vt
+                    if vt != 0.0 and not getattr(props, "peneloux", False)
+                    else None,
+                )
+            else:
+                self.eos = PengRobinsonH2(volume_translation=vt)
         else:
             self.eos = eos
+            if isinstance(eos, PengRobinsonMixture) and not eos.is_pure_h2():
+                self._is_multicomponent = True
+                self._init_comp = dict(eos.composition)
+
+        self._mix_helper = (
+            self.eos
+            if isinstance(self.eos, PengRobinsonMixture)
+            else PengRobinsonMixture(
+                composition=self._init_comp,
+                peneloux=getattr(props, "peneloux", False),
+            )
+        )
 
         if tau_days is None:
             tau_days = 3.0 if props.is_cavern else 30.0
         self.tau_s: float = tau_days * 86400.0
 
+        self.rel_perm: RelativePermeabilityModel = getattr(
+            props, "rel_perm", None
+        ) or RelativePermeabilityModel(
+            swr=float(getattr(props, "swr", 0.0)),
+            sgc=float(getattr(props, "sgc", 0.0)),
+        )
         self.V_bulk: float = props.area * props.thickness
-        self.V_pore0: float = self.V_bulk * props.porosity
+        self.V_pore0: float = (
+            self.V_bulk * props.porosity * self.rel_perm.effective_porosity_factor()
+        )
 
         if props.pore_model is None:
             model_type = "rigid" if props.is_cavern else "elastic"
@@ -175,7 +234,7 @@ class UHSReservoir0D:
     ) -> float:
         if self.props.is_cavern:
             return 1.0e6
-        k = self.props.permeability
+        k = self.props.permeability * self.rel_perm.effective_permeability_factor()
         h = self.props.thickness
         re = max(self.props.drainage_radius, self.props.well_radius * 2.0)
         rw = self.props.well_radius
@@ -212,6 +271,24 @@ class UHSReservoir0D:
         """Signed well mass rate [kg/s] at a reservoir state (diagnostic helper)."""
         return self._mass_rate_at(state.pressure, state.temperature, period)
 
+    def _trial_composition(
+        self,
+        comp_m_old: dict[str, float],
+        w_inj: dict[str, float],
+        w_prod: dict[str, float],
+        q_val: float,
+        dt: float,
+    ) -> dict[str, float]:
+        dm = q_val * dt
+        all_sp = set(comp_m_old) | set(w_inj) | set(w_prod)
+        if dm >= 0.0:
+            m_map = {sp: comp_m_old.get(sp, 0.0) + w_inj.get(sp, 0.0) * dm for sp in all_sp}
+        else:
+            m_map = {
+                sp: max(comp_m_old.get(sp, 0.0) + w_prod.get(sp, 0.0) * dm, 0.0) for sp in all_sp
+            }
+        return PengRobinsonMixture.mole_fractions_from_mass(m_map)
+
     def _step_residual(
         self,
         P_new: float,
@@ -220,8 +297,31 @@ class UHSReservoir0D:
         m_old: float,
         period: SchedulePeriod,
         dt: float,
+        comp_info: tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]
+        | None = None,
     ) -> tuple[float, float, float]:
         """Mass-balance residual and associated temperature/rate at P_new."""
+        if comp_info is not None and isinstance(self.eos, PengRobinsonMixture):
+            y_old, comp_m_old, w_inj, w_prod = comp_info
+            self.eos.set_composition(y_old)
+            T_new = coupled_temperature_update(
+                T_old=T_old,
+                P_old=max(P_old, 1.0),
+                P_new=max(P_new, 1.0),
+                T_geothermal=self.props.reference_temperature,
+                dt_s=dt,
+                tau_s=self.tau_s,
+                eos=self.eos,
+            )
+            q = self._mass_rate_at(P_new, T_new, period)
+            y_trial = self._trial_composition(comp_m_old, w_inj, w_prod, q, dt)
+            self.eos.set_composition(y_trial)
+            q = self._mass_rate_at(P_new, T_new, period)
+            y_trial = self._trial_composition(comp_m_old, w_inj, w_prod, q, dt)
+            self.eos.set_composition(y_trial)
+            m_new = self.mass_from_state(P_new, T_new)
+            return m_new - m_old - q * dt, q, T_new
+
         T_new = coupled_temperature_update(
             T_old=T_old,
             P_old=max(P_old, 1.0),
@@ -248,7 +348,26 @@ class UHSReservoir0D:
         """
         P_old = state.pressure
         T_old = state.temperature
-        m_old = self.mass_from_state(P_old, T_old)
+
+        comp_info = None
+        y_old = normalize_composition(state.composition or self._init_comp)
+        if self._is_multicomponent and isinstance(self.eos, PengRobinsonMixture):
+            self.eos.set_composition(y_old)
+            m_old = self.mass_from_state(P_old, T_old)
+            w_old = self.eos.mass_fractions(y_old)
+            comp_m_old = {sp: w * m_old for sp, w in w_old.items()}
+            w_inj = self.eos.mass_fractions(self._inj_comp)
+            seg = min(max(float(getattr(self.props, "plume_segregation", 0.0)), 0.0), 1.0)
+            if seg > 0.0 and comp_m_old.get("H2", 0.0) > 1e-6:
+                all_sp = set(w_old) | set(w_inj)
+                w_prod = {
+                    sp: (1.0 - seg) * w_old.get(sp, 0.0) + seg * w_inj.get(sp, 0.0) for sp in all_sp
+                }
+            else:
+                w_prod = w_old
+            comp_info = (y_old, comp_m_old, w_inj, w_prod)
+        else:
+            m_old = self.mass_from_state(P_old, T_old)
 
         if period.mode == "shut_in":
             lo = max(1.0e3, P_old * 0.5)
@@ -257,24 +376,24 @@ class UHSReservoir0D:
             lo = max(1.0e3, min(P_old, period.bhp_target) * 0.98)
             hi = max(P_old, period.bhp_target) * 1.02 + 1.0e3
 
-        f_lo = self._step_residual(lo, P_old, T_old, m_old, period, dt)[0]
-        f_hi = self._step_residual(hi, P_old, T_old, m_old, period, dt)[0]
+        f_lo = self._step_residual(lo, P_old, T_old, m_old, period, dt, comp_info)[0]
+        f_hi = self._step_residual(hi, P_old, T_old, m_old, period, dt, comp_info)[0]
         for _ in range(80):
             if f_lo <= 0.0:
                 break
             lo = max(1.0e3, lo * 0.5)
-            f_lo = self._step_residual(lo, P_old, T_old, m_old, period, dt)[0]
+            f_lo = self._step_residual(lo, P_old, T_old, m_old, period, dt, comp_info)[0]
         for _ in range(80):
             if f_hi >= 0.0:
                 break
             hi *= 2.0
-            f_hi = self._step_residual(hi, P_old, T_old, m_old, period, dt)[0]
+            f_hi = self._step_residual(hi, P_old, T_old, m_old, period, dt, comp_info)[0]
 
         P_new = 0.5 * (lo + hi)
         q = 0.0
         T_new = T_old
         for _ in range(80):
-            f, q, T_new = self._step_residual(P_new, P_old, T_old, m_old, period, dt)
+            f, q, T_new = self._step_residual(P_new, P_old, T_old, m_old, period, dt, comp_info)
             if abs(f) <= 1.0e-9 * max(abs(m_old), 1.0):
                 break
             if f > 0.0:
@@ -285,7 +404,7 @@ class UHSReservoir0D:
                 break
 
             dP = max(1.0, 1.0e-6 * P_new)
-            f2 = self._step_residual(P_new + dP, P_old, T_old, m_old, period, dt)[0]
+            f2 = self._step_residual(P_new + dP, P_old, T_old, m_old, period, dt, comp_info)[0]
             slope = (f2 - f) / dP
             if slope > 0.0 and math.isfinite(slope):
                 P_try = P_new - f / slope
@@ -295,10 +414,17 @@ class UHSReservoir0D:
                 P_try = 0.5 * (lo + hi)
             P_new = max(P_try, 1.0e3)
 
-        _, q, T_new = self._step_residual(P_new, P_old, T_old, m_old, period, dt)
+        _, q, T_new = self._step_residual(P_new, P_old, T_old, m_old, period, dt, comp_info)
+        y_new: dict[str, float] | None = state.composition
+        if comp_info is not None and isinstance(self.eos, PengRobinsonMixture):
+            y_new = dict(self.eos.composition)
         m_new = self.mass_from_state(P_new, T_new)
         q_report = (m_new - m_old) / dt if dt > 0.0 else 0.0
-        return ReservoirState(pressure=P_new, temperature=T_new, mass=m_new), q_report
+
+        return (
+            ReservoirState(pressure=P_new, temperature=T_new, mass=m_new, composition=y_new),
+            q_report,
+        )
 
     def run_schedule(
         self,
@@ -308,11 +434,15 @@ class UHSReservoir0D:
         collect_time_series: bool = True,
     ) -> SimulationResult:
         result = SimulationResult()
+        y0 = normalize_composition(initial_state.composition or self._init_comp)
+        if isinstance(self.eos, PengRobinsonMixture):
+            self.eos.set_composition(y0)
         m0 = self.mass_from_state(initial_state.pressure, initial_state.temperature)
         state = ReservoirState(
             pressure=initial_state.pressure,
             temperature=initial_state.temperature,
             mass=m0,
+            composition=y0 if self._is_multicomponent else initial_state.composition,
         )
         t = 0.0
 
@@ -323,12 +453,19 @@ class UHSReservoir0D:
         inj_kg = 0.0
         wdr_kg = 0.0
 
+        y_cur = y0
+        y_h2_init = y_cur.get("H2", 1.0)
+        min_wdr_h2 = y_h2_init
+
         if collect_time_series:
             result.times.append(t)
             result.pressures.append(state.pressure)
             result.temperatures.append(state.temperature)
             result.masses.append(state.mass)
             result.mass_rates.append(0.0)
+            result.h2_mole_fractions.append(y_h2_init)
+            result.wobbe_indices.append(self._mix_helper.wobbe_index(y_cur))
+            result.hhv_values.append(self._mix_helper.heating_values_volumetric(y_cur)[0])
 
         for period in schedule:
             n_steps = max(round(period.duration_days * 86400.0 / dt_s), 1)
@@ -348,17 +485,28 @@ class UHSReservoir0D:
                 m_min = min(m_min, new_state.mass)
                 state = new_state
 
+                y_cur = normalize_composition(state.composition or self._init_comp)
+                y_h2_cur = y_cur.get("H2", 1.0)
+                if q < 0.0:
+                    min_wdr_h2 = min(min_wdr_h2, y_h2_cur)
+
                 if collect_time_series:
                     result.times.append(t)
                     result.pressures.append(state.pressure)
                     result.temperatures.append(state.temperature)
                     result.masses.append(state.mass)
                     result.mass_rates.append(q)
+                    result.h2_mole_fractions.append(y_h2_cur)
+                    result.wobbe_indices.append(self._mix_helper.wobbe_index(y_cur))
+                    result.hhv_values.append(self._mix_helper.heating_values_volumetric(y_cur)[0])
 
         wg = m_max - m_min
         eff = wg / m_max * 100.0 if m_max > 0.0 else 0.0
         net_kg = inj_kg - wdr_kg
         mb_err = abs((state.mass - m0) - net_kg) / max(abs(net_kg), 1.0)
+        y_final = normalize_composition(state.composition or self._init_comp)
+        if wdr_kg <= 0.0:
+            min_wdr_h2 = y_final.get("H2", 1.0)
 
         result.metrics = {
             "max_pressure_Pa": P_max,
@@ -378,6 +526,11 @@ class UHSReservoir0D:
             "final_pressure_Pa": state.pressure,
             "final_temperature_K": state.temperature,
             "final_mass_kg": state.mass,
+            "initial_h2_purity_mol_pct": y_h2_init * 100.0,
+            "final_h2_purity_mol_pct": y_final.get("H2", 1.0) * 100.0,
+            "min_withdrawn_h2_purity_mol_pct": min_wdr_h2 * 100.0,
+            "final_wobbe_index_MJ_sm3": self._mix_helper.wobbe_index(y_final),
+            "final_hhv_MJ_sm3": self._mix_helper.heating_values_volumetric(y_final)[0],
         }
         return result
 
@@ -581,9 +734,17 @@ def run_monte_carlo(
             m_sorbent=base_props.m_sorbent,
             volume_translation=base_props.volume_translation,
             peneloux=base_props.peneloux,
+            cushion_gas=base_props.cushion_gas,
+            initial_composition=base_props.initial_composition,
+            injected_composition=base_props.injected_composition,
+            plume_segregation=base_props.plume_segregation,
         )
 
-        model = UHSReservoir0D(rp, eos=eos, tau_days=tau_days)
+        model = UHSReservoir0D(
+            rp,
+            eos=None if rp.cushion_gas.upper() != "H2" or rp.initial_composition else eos,
+            tau_days=tau_days,
+        )
         P0 = rp.reference_pressure
         T0 = rp.reference_temperature
         m0 = model.mass_from_state(P0, T0)

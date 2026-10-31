@@ -34,6 +34,7 @@ from h2multisim.models.zero_d import (
 from h2multisim.thermo import (
     IsothermModel,
     PoreVolumeModel,
+    RelativePermeabilityModel,
 )
 from h2multisim.units import bar_to_pa, mD_to_m2
 
@@ -75,6 +76,28 @@ def _perm(d: dict[str, Any]) -> float:
     if "permeability_mD" in d:
         return mD_to_m2(float(d["permeability_mD"]))
     return 0.0
+
+
+def _rel_perm(d: dict[str, Any]) -> RelativePermeabilityModel | None:
+    rp_raw = d.get("rel_perm")
+    if isinstance(rp_raw, dict):
+        return RelativePermeabilityModel(
+            model=str(rp_raw.get("model", "corey")),
+            swr=float(rp_raw.get("swr", d.get("swr", 0.0))),
+            sgc=float(rp_raw.get("sgc", d.get("sgc", 0.0))),
+            krg_max=float(rp_raw["krg_max"]) if rp_raw.get("krg_max") is not None else None,
+            krw_max=float(rp_raw.get("krw_max", 1.0)),
+            n_g=float(rp_raw.get("n_g", 2.0)),
+            n_w=float(rp_raw.get("n_w", 3.0)),
+            brooks_corey_lambda=float(rp_raw.get("brooks_corey_lambda", 2.0)),
+            entry_pressure_Pa=_pa(rp_raw.get("entry_pressure_Pa", 5.0e3)),
+            active_gas_saturation=(
+                float(rp_raw["active_gas_saturation"])
+                if rp_raw.get("active_gas_saturation") is not None
+                else None
+            ),
+        )
+    return None
 
 
 def _props_0d(d: dict[str, Any]) -> ReservoirProperties:
@@ -139,6 +162,13 @@ def _props_0d(d: dict[str, Any]) -> ReservoirProperties:
             d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
         ),
         peneloux=bool(d.get("peneloux", False)),
+        cushion_gas=str(d.get("cushion_gas", "H2")),
+        initial_composition=d.get("initial_composition"),
+        injected_composition=d.get("injected_composition"),
+        plume_segregation=float(d.get("plume_segregation", 0.0)),
+        swr=float(d.get("swr", 0.0)),
+        sgc=float(d.get("sgc", 0.0)),
+        rel_perm=_rel_perm(d),
     )
 
 
@@ -159,6 +189,17 @@ def _props_1d(d: dict[str, Any]) -> RadialReservoirProps:
             d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
         ),
         peneloux=bool(d.get("peneloux", False)),
+        cushion_gas=str(d.get("cushion_gas", "H2")),
+        initial_h2_mole_fraction=(
+            float(d["initial_h2_mole_fraction"])
+            if d.get("initial_h2_mole_fraction") is not None
+            else None
+        ),
+        dispersivity_m=float(d.get("dispersivity_m", 0.5)),
+        molecular_diffusivity_m2_s=float(d.get("molecular_diffusivity_m2_s", 1.0e-5)),
+        swr=float(d.get("swr", 0.0)),
+        sgc=float(d.get("sgc", 0.0)),
+        rel_perm=_rel_perm(d),
     )
 
 
@@ -186,6 +227,9 @@ def _props_2d(d: dict[str, Any]) -> Reservoir2DProps:
             d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
         ),
         peneloux=bool(d.get("peneloux", False)),
+        swr=float(d.get("swr", 0.0)),
+        sgc=float(d.get("sgc", 0.0)),
+        rel_perm=_rel_perm(d),
     )
 
 
@@ -214,6 +258,9 @@ def _props_3d(d: dict[str, Any]) -> Reservoir3DProps:
             d.get("volume_translation", -4.0e-6 if d.get("peneloux", False) else 0.0)
         ),
         peneloux=bool(d.get("peneloux", False)),
+        swr=float(d.get("swr", 0.0)),
+        sgc=float(d.get("sgc", 0.0)),
+        rel_perm=_rel_perm(d),
     )
 
 

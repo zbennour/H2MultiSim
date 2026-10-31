@@ -38,9 +38,14 @@ from h2multisim.models import (
     schedule_rough,
 )
 from h2multisim.thermo import (
+    BINARY_K_IJ,
+    GAS_COMPONENTS,
+    GasComponentSpec,
     IsothermModel,
     PengRobinsonH2,
+    PengRobinsonMixture,
     PoreVolumeModel,
+    RelativePermeabilityModel,
     adiabatic_temperature,
     coupled_temperature_update,
     cp_ideal_h2,
@@ -48,6 +53,7 @@ from h2multisim.thermo import (
     cp_specific_real_h2,
     gamma_real_h2,
     joule_thomson_coefficient,
+    normalize_composition,
     thermal_relaxation_update,
     viscosity_h2,
 )
@@ -75,7 +81,7 @@ from h2multisim.units import (
     tonnes_to_kg,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __all__ = [
     "__version__",
     # Main multi-scale simulators
@@ -103,10 +109,16 @@ __all__ = [
     "export_eclipse_2d",
     "export_eclipse_3d",
     "generate_pvdg_table",
-    # Thermodynamics
+    # Thermodynamics & Petrophysics
     "PengRobinsonH2",
+    "PengRobinsonMixture",
+    "GasComponentSpec",
+    "GAS_COMPONENTS",
+    "BINARY_K_IJ",
+    "normalize_composition",
     "PoreVolumeModel",
     "IsothermModel",
+    "RelativePermeabilityModel",
     "viscosity_h2",
     "gamma_real_h2",
     "joule_thomson_coefficient",
