@@ -128,27 +128,37 @@ Executing `py audit/bench_analytical_1d.py` or running test `test_38_analytical_
 
 H2MultiSim provides a native, built-in deck export engine (`h2multisim.deck_export`) that converts any 1D, 2D, or 3D simulation model or scenario into fully valid ECLIPSE 100/300 and OPM Flow `.DATA` format.
 
-### Model equivalence (v1.3.1)
+### Model equivalence (v1.3.2)
 
-The exported decks are built to match the H2MultiSim solver inputs: `ROCK` carries the same pore compressibility $C_t$ the 1D/2D/3D solvers apply, `PORO`/`PERM*` include the solvers' immobile-water factors ($1-S_{wr}$, $k_{rg}$), 3D layers and perforations are written top-down (ECLIPSE `K = 1` is the top, H2MultiSim layer 0 is the bottom), 3D `PERMZ = PERMX` (the solver is isotropic), producer rate caps are written to the `WCONPROD` GRAT item, and the 1D skin factor is written to `COMPDAT`. The decks remain isothermal; H2MultiSim's adiabatic/relaxation thermal model has no deck counterpart, so expect small differences during rapid pressure swings.
+OPM Flow has no single-phase gas mode (decks declaring only `GAS` stop with *"No suitable configuration found"*), so the decks are **gas–water** with immobile connate water:
 
-### Supported ECLIPSE Keywords
+- `SWAT`/`SGAS` (or `EQUIL` in 3D) place water at the solver's $S_{wr}$; `SGWFN` tabulates the solver's own `RelativePermeabilityModel` $k_{rg}(S_g)$, $k_{rw}(S_w)$ with zero capillary pressure; `PORO`/`PERM*` are the unscaled rock values.
+- `ROCK` carries the pore compressibility $C_t$ the 1D/2D/3D solvers apply.
+- 3D layers and perforations are written top-down (ECLIPSE `K = 1` is the top; H2MultiSim layer 0 is the bottom), with `PERMZ = PERMX` (the solver is isotropic).
+- The 1D radial model is written as an $N\times1\times1$ strip whose `PORV` and `TRANX` (EDIT section) are the exact log-grid pore volumes and radial transmissibilities, with an explicit `COMPDAT` connection factor using the solver's equivalent radius. OPM builds a cylindrical grid from `RADIAL` but does not connect the well to it.
+- Producer rate caps go to the `WCONPROD` GRAT item; a `SUMMARY` section requests `FPR`, `FGIP`, `FGIT`, `FGPT`, `WBHP`, `WGIR`, `WGPR`.
+- The decks are isothermal; H2MultiSim's adiabatic/relaxation thermal model has no deck counterpart.
 
-| Section | Keywords Generated | Description |
-| :--- | :--- | :--- |
-| **RUNSPEC** | `TITLE`, `DIMENS`, `RADIAL`, `GAS`, `METRIC`, `START`, `WELLDIMS`, `UNIFOUT`, `UNIFIN` | Standard metric dry-gas simulation specifications. |
-| **GRID** | `DXV`, `DYV`, `DZV`, `TOPS`, `INRAD`, `DRV`, `DTHETAV`, `PORO`, `PERMX`, `PERMY`, `PERMZ`, `PERMR`, `PERMTHT` | Cartesian and logarithmic radial grid geometries, variable permeability fields, and vertical stratigraphy. |
-| **PROPS** | `DENSITY`, `ROCK`, `PVDG` | Hydrogen surface density ($0.08522\text{ kg/sm}^3$), rock compressibility, and gas PVT table ($P, B_g, \mu$). |
-| **REGIONS** | `FIPNUM` | Fluid-in-place pore volume tracking zones. |
-| **SOLUTION** | `PRESSURE`, `EQUIL` | Direct pressure initialisation or hydrostatic datum equilibrium matching H2MultiSim's datum convention ($z_{\text{ref}} = 0.5 L_z$). |
-| **SCHEDULE** | `WELSPECS`, `COMPDAT`, `WCONINJE`, `WCONPROD`, `WELOPEN`, `RPTRST`, `RPTSCHED`, `TSTEP` | Multi-well trajectory locations, vertical layer perforations, active BHP/rate controls, and time increments. |
+### Cross-simulator results (OPM Flow 2026.04, reproducible via `audit/bench_opm.py`)
+
+Each canonical scenario is exported, run in OPM Flow with its time step capped at H2MultiSim's $\Delta t$, and compared at every OPM report time. "dGIP" is the error in the change of gas in place (OPM: cumulative injection − production), normalised by the largest inventory swing; "P" is the error in pore-volume-average pressure (`FPR`, uniform Cartesian grids only).
+
+| Scenario | H2MultiSim isothermal: max dGIP err | max P err | H2MultiSim thermal: max dGIP err | max P err |
+| :--- | ---: | ---: | ---: | ---: |
+| 1D Okoroafor (radial, 40 cells) | **0.39 %** | – | 12.7 % | – |
+| 2D single well (15×15) | **0.72 %** | **0.011 %** | 6.4 % | 0.36 % |
+| 2D five-spot (15×15) | **1.18 %** | **0.052 %** | 8.6 % | 0.52 % |
+| 3D gravity override (8×8×5) | **0.17 %** | **0.000 %** | 2.8 % | 0.15 % |
+| 3D layered reservoir (8×8×5) | **0.51 %** | **0.033 %** | 7.0 % | 1.53 % |
+
+With matched physics (isothermal) the two simulators agree to ≤ 1.2 % in stored-gas change and ≤ 0.05 % in average pressure. The "thermal" columns are not errors: they measure how much H2MultiSim's compression heating / expansion cooling changes deliverability relative to an isothermal simulator. With OPM's default adaptive stepping (steps up to tens of days), the isothermal dGIP gap grows to 1–9 %, which is OPM's own time-discretisation error on these fast transients.
 
 ### Exporting Input Decks via CLI
 
 Use the `export-deck` subcommand:
 
 ```powershell
-# 1D Radial Wellbore Model
+# 1D Radial Wellbore Model (exported as an exact PORV/TRANX strip)
 py -m h2multisim export-deck --scale 1d --scenario okoroafor --out-file output/1d_okoroafor.DATA
 
 # 2D Multi-Well Areal Model (Five-Spot Pattern)
