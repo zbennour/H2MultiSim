@@ -8,6 +8,7 @@
 
 ### Accuracy corrections found by `verify`
 - **H2 viscosity refit.** The correlation was 1.7–3.0 % low at high pressure (e.g. −2.6 % at 250 K / 300 bar), contrary to the documented "< 1.5 %". The dilute-gas scale and dense-fluid residual are refitted to CoolProp over 250–450 K, 1–350 bar: max error 0.49 % (0.35 % on the verify grid). Results shift slightly; the 2D golden values and the 1D constant-BHP reference (now 6 496.9 t from `audit/bench_1d_bhp.py`) were regenerated.
+- **PVDG viscosity precision.** Deck viscosities were written to 5 decimals (cP), so after the refit adjacent low-pressure rows rounded equal and OPM rejected the deck as non-monotonic (caught by the `opm-decks` CI job). They are now written at full precision, with a test on the values as printed.
 - **Z-factor envelope corrected in the docs.** Peneloux PR is within 0.85 % at 280–450 K but up to 1.2 % at 250 K (previously stated as ≤ 0.85 % throughout).
 
 ## v1.7.0 — 2026-10-31

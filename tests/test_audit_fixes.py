@@ -552,6 +552,24 @@ class TestDeckExport(unittest.TestCase):
         self.assertAlmostEqual(values[-1], 15.0, places=2)  # bottom layer written last
         self.assertEqual(permx, permz)  # isotropic, like the 3D solver
 
+    def test_pvdg_columns_strictly_monotonic_as_written(self) -> None:
+        # OPM rejects PVDG tables whose Bg does not decrease / viscosity does not
+        # increase row to row, so check the values exactly as printed in the deck.
+        props, sched = okoroafor_radial()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.DATA")
+            export_eclipse_1d_radial(props, sched, path, N=10)
+            text = self._read(path)
+        rows = [
+            [float(v) for v in line.split()]
+            for line in text.split("PVDG\n", 1)[1].split("/", 1)[0].strip().splitlines()
+        ]
+        self.assertGreater(len(rows), 10)
+        for prev, cur in zip(rows, rows[1:]):
+            self.assertGreater(cur[0], prev[0])  # pressure
+            self.assertLess(cur[1], prev[1])  # Bg
+            self.assertGreater(cur[2], prev[2])  # viscosity
+
     def test_gas_water_deck_with_connate_water(self) -> None:
         props, wells, sched = scenario_single_well(nx=4, ny=4)
         props.swr = 0.25

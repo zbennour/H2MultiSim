@@ -89,7 +89,7 @@ def _props_lines(
         "",
         "PVDG",
     ]
-    lines.extend(f"  {p:8.2f} {bg:14.6e} {mu:10.5f}" for p, bg, mu in pvdg)
+    lines.extend(f"  {p:8.2f} {bg:14.6e} {mu:14.7e}" for p, bg, mu in pvdg)
     lines.extend(["/", "", "SGWFN", "-- Sg        krg          krw          Pcgw"])
     sg_pts = sorted({sg_max * i / (n_sat - 1) for i in range(n_sat)} | {rel.sgc})
     for sg in sg_pts:
