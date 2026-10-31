@@ -12,7 +12,7 @@ import math
 import os
 from dataclasses import dataclass, field
 
-from h2multisim.models._common import validate_mode
+from h2multisim.models._common import check_inputs, validate_mode
 from h2multisim.thermo import (
     PengRobinsonH2,
     RelativePermeabilityModel,
@@ -59,6 +59,22 @@ class Reservoir3DProps:
     )
 
     def __post_init__(self) -> None:
+        check_inputs(
+            "Reservoir3DProps",
+            positive={
+                "Lx": self.Lx,
+                "Ly": self.Ly,
+                "Lz": self.Lz,
+                "nx": float(self.nx),
+                "ny": float(self.ny),
+                "nz": float(self.nz),
+                "k": self.k,
+                "P_init": self.P_init,
+                "T_init": self.T_init,
+            },
+            non_negative={"Ct": self.Ct, "tau_days": self.tau_days},
+            fraction={"phi": self.phi},
+        )
         if self.peneloux and self.volume_translation == 0.0:
             self.volume_translation = -4.0e-6
 
@@ -98,6 +114,11 @@ class Schedule3D:
         validate_mode(self.mode, f"schedule period {self.name!r}")
         for well_name, mode in (self.well_modes or {}).items():
             validate_mode(mode, f"schedule period {self.name!r}, well {well_name!r}")
+        check_inputs(
+            f"schedule period {self.name!r}",
+            positive={"duration_d": self.duration_d},
+            non_negative={"bhp_target": self.bhp_target, "q_max": self.q_max},
+        )
 
     def mode_for(self, well_name: str) -> str:
         """Operating mode for a named well (falls back to the period mode)."""

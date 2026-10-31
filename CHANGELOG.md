@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.3 — 2026-10-31
+
+### Input validation
+- Reservoir and schedule dataclasses in every tier reject non-physical inputs with the field name in the error (AUDIT.md §4.10): permeability, pressure, temperature, dimensions and grid counts must be > 0; porosity in (0, 1]; compressibility, rates, BHP targets and relaxation times ≥ 0; durations > 0; `r_ext > r_well`; `outer_bc` ∈ {`no_flow`, `const_pressure`}.
+
+### CI
+- New `package` job: builds sdist/wheel, installs the wheel into a clean environment and runs the CLI end to end.
+- New `opm-decks` job: installs OPM Flow from the OPM PPA and runs every exported canonical deck (8 scenarios), failing if any deck is rejected or produces no summary.
+
 ## v1.3.2 — 2026-10-31
 
 ### Tier 3: decks now run in OPM Flow, with measured agreement
