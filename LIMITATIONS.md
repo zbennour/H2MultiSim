@@ -1,6 +1,6 @@
 # Assumptions & Limitations
 
-This page states what H2MultiSim models, what it does not, and the measured accuracy envelope, so results can be used within their validity range. Quantitative figures come from the reproducible scripts in `audit/` and the tests in `tests/` (see [BENCHMARKS.md](BENCHMARKS.md)).
+This page states what H2MultiSim models, what it does not, and the measured accuracy envelope, so results can be used within their validity range. Quantitative figures come from the reproducible scripts in `audit/` and the tests in `tests/` (see [BENCHMARKS.md](BENCHMARKS.md)); `h2multisim verify` re-checks the thermodynamic envelope below against embedded CoolProp references.
 
 ## Scope by tier
 
@@ -33,8 +33,8 @@ Validated range: 250–450 K, 1–350 bar for H2; 300–370 K, 20–250 bar for 
 
 | Property | Accuracy |
 |---|---|
-| H2 Z factor / density (Peneloux) | ≤ 0.85 % (plain PR: ≤ 4.4 %) |
-| H2 viscosity | ≤ 1.5 % |
+| H2 Z factor / density (Peneloux) | ≤ 1.0 % at 280–450 K; ≤ 1.25 % at 250–280 K (plain PR: ≤ 4.4 %) |
+| H2 viscosity | ≤ 0.5 % |
 | H2 real-gas Cp | ≤ 0.3 %; γ = Cp/Cv ≤ 2 % |
 | H2 ΔH, ΔU (Peneloux) | ~5 J/mol over 1–200 bar |
 | H2 isentropic ΔT | ≤ 1.6 % |

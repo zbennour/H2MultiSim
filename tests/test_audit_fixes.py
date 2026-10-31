@@ -342,6 +342,45 @@ class TestCushionGas3D(unittest.TestCase):
         self.assertFalse(UHSFieldScale3D(props, wells)._is_multicomponent)
 
 
+class TestVerifyAndCLI(unittest.TestCase):
+    def test_verify_all_checks_pass(self) -> None:
+        from h2multisim.verify import run_checks
+
+        failed = [
+            f"{c.name} {c.condition}: {100 * c.error:+.2f}%" for c in run_checks() if not c.passed
+        ]
+        self.assertEqual(failed, [])
+
+    def test_viscosity_within_half_percent(self) -> None:
+        from h2multisim.verify import H2_STATE_REFS
+
+        eos = PengRobinsonH2(peneloux=True)
+        for T, Pb, _, mu_ref, _ in H2_STATE_REFS:
+            with self.subTest(T=T, P=Pb):
+                mu = viscosity_h2(T, Pb * 1e5, eos=eos) * 1e6
+                self.assertLess(abs(mu / mu_ref - 1.0), 0.005)
+
+    def test_cli_json_output(self) -> None:
+        import json
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "m.json")
+            proc = subprocess.run(
+                [sys.executable, "-m", "h2multisim", "run", "--scale", "0d", "--scenario",
+                 "okoroafor", "--dt-days", "60", "--out-dir", tmp, "--json", out],
+                capture_output=True, text=True, check=False,
+                env={**os.environ, "PYTHONPATH": os.path.join(os.path.dirname(__file__), "..", "src")},
+            )  # fmt: skip
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with open(out, encoding="utf-8") as fh:
+                data = json.load(fh)
+        self.assertEqual(data["scale"], "0d")
+        self.assertEqual(data["scenario"], "okoroafor")
+        self.assertIn("working_gas_energy_GWh_LHV", data["metrics"])
+
+
 class TestModeValidation(unittest.TestCase):
     def test_unknown_modes_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -512,6 +551,24 @@ class TestDeckExport(unittest.TestCase):
         values = [float(tok.split("*")[1]) for tok in permx]
         self.assertAlmostEqual(values[-1], 15.0, places=2)  # bottom layer written last
         self.assertEqual(permx, permz)  # isotropic, like the 3D solver
+
+    def test_pvdg_columns_strictly_monotonic_as_written(self) -> None:
+        # OPM rejects PVDG tables whose Bg does not decrease / viscosity does not
+        # increase row to row, so check the values exactly as printed in the deck.
+        props, sched = okoroafor_radial()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.DATA")
+            export_eclipse_1d_radial(props, sched, path, N=10)
+            text = self._read(path)
+        rows = [
+            [float(v) for v in line.split()]
+            for line in text.split("PVDG\n", 1)[1].split("/", 1)[0].strip().splitlines()
+        ]
+        self.assertGreater(len(rows), 10)
+        for prev, cur in zip(rows, rows[1:]):
+            self.assertGreater(cur[0], prev[0])  # pressure
+            self.assertLess(cur[1], prev[1])  # Bg
+            self.assertGreater(cur[2], prev[2])  # viscosity
 
     def test_gas_water_deck_with_connate_water(self) -> None:
         props, wells, sched = scenario_single_well(nx=4, ny=4)

@@ -6,11 +6,11 @@ import pytest
 
 from h2multisim.models.two_d import UHSAreal2D, scenario_single_well
 
-# Golden values re-captured 2026-10-31 (v1.5.0, PCG pressure solver).  The PCG and
-# SOR solvers agree to ~6e-10 bar / 6 g; tolerances sit just above that, i.e. at
+# Golden values re-captured 2026-10-31 (v1.8.0, refitted H2 viscosity).  The PCG and
+# SOR solvers agree to ~3e-10 bar / 5 g; tolerances sit just above that, i.e. at
 # the linear-solver tolerance rather than at round-off.
-P_END_BAR = 79.74524583035554
-MASS_END_T = 268575.2726275423
+P_END_BAR = 79.74730397669809
+MASS_END_T = 268578.2202803895
 
 
 @pytest.mark.parametrize("solver", ["pcg", "sor"])

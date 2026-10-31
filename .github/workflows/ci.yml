@@ -53,6 +53,9 @@ jobs:
           uv pip install --python /tmp/smoke/bin/python dist/*.whl
           cd /tmp
           /tmp/smoke/bin/h2multisim --version
+          /tmp/smoke/bin/h2multisim verify
+          /tmp/smoke/bin/h2multisim run --scale 0d --scenario teesside --json - > /tmp/smoke-metrics.json
+          python3 -c "import json; d=json.load(open('/tmp/smoke-metrics.json')); assert d['metrics']['converged'] == 1.0"
           /tmp/smoke/bin/h2multisim run --scale 0d --scenario okoroafor --dt-days 30 --out-dir /tmp/smoke-out
           test -s /tmp/smoke-out/0d_okoroafor_timeseries.csv
 

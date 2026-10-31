@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.8.0 — 2026-10-31
+
+### CLI (AUDIT.md §4.10)
+- New `h2multisim verify`: checks the installed thermodynamic core (H2 Z, viscosity, Cp over 250–400 K × 10–300 bar; isentropic ΔT; JT at 100 bar; CH4/CO2/N2 density and viscosity) against reference values embedded from CoolProp 8.0.0, prints the table and exits non-zero on any failure. No CoolProp dependency. Runs in the CI package job.
+- `run --json PATH` (`-` for stdout) writes the run metrics, scenario and version (plus Monte Carlo statistics with `--mc`) as JSON; `run --quiet` suppresses the report.
+
+### Accuracy corrections found by `verify`
+- **H2 viscosity refit.** The correlation was 1.7–3.0 % low at high pressure (e.g. −2.6 % at 250 K / 300 bar), contrary to the documented "< 1.5 %". The dilute-gas scale and dense-fluid residual are refitted to CoolProp over 250–450 K, 1–350 bar: max error 0.49 % (0.35 % on the verify grid). Results shift slightly; the 2D golden values and the 1D constant-BHP reference (now 6 496.9 t from `audit/bench_1d_bhp.py`) were regenerated.
+- **PVDG viscosity precision.** Deck viscosities were written to 5 decimals (cP), so after the refit adjacent low-pressure rows rounded equal and OPM rejected the deck as non-monotonic (caught by the `opm-decks` CI job). They are now written at full precision, with a test on the values as printed.
+- **Z-factor envelope corrected in the docs.** Measured on a 5 K × 5 bar grid against CoolProp, Peneloux PR is within 1.0 % at 280–450 K and 1.25 % at 250–280 K. It was previously stated as ≤ 0.85 % throughout, from sparse sampling.
+- **BENCHMARKS.md Tier 1 table regenerated** from CoolProp and the current code. The old table listed a JT reference of −1.62e-6 K/Pa (CoolProp: −3.47e-7 K/Pa) and pre-refit viscosities.
+
 ## v1.7.0 — 2026-10-31
 
 ### 3D cushion-gas mixing

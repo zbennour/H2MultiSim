@@ -318,10 +318,12 @@ def cp_specific_real_h2(
 
 
 # ── Viscosity ────────────────────────────────────────────────────────────────
-# Dense-fluid residual viscosity parameters for normal hydrogen (Muzny et al., 2013 / NIST).
-# Δμ(ρ) = c1 * ρ + c2 * ρ² [Pa·s] with ρ in kg/m³
-_MU_RESIDUAL_C1 = 3.464e-9  # Pa·s / (kg/m³)
-_MU_RESIDUAL_C2 = 1.083e-9  # Pa·s / (kg/m³)²
+# Viscosity of normal hydrogen: μ = s0·μ0_CE(T) + c1·ρ + c2·ρ² (ρ in kg/m³).
+# Least-squares fit (relative) to CoolProp 8.0.0 / Muzny et al. (2013) over
+# 250-450 K, 1-350 bar with Peneloux-PR density: max error 0.49 %, rms 0.21 %.
+_MU_DILUTE_SCALE = 1.008945  # corrects the Chapman-Enskog/Lennard-Jones dilute limit
+_MU_RESIDUAL_C1 = 3.2707e-9  # Pa·s / (kg/m³)
+_MU_RESIDUAL_C2 = 1.3351e-9  # Pa·s / (kg/m³)²
 
 
 def viscosity_h2(
@@ -333,10 +335,10 @@ def viscosity_h2(
     """
     Dynamic viscosity of pure hydrogen (or gas mixture if PengRobinsonMixture is provided) [Pa·s].
 
-    Combines the dilute-gas Chapman-Enskog collision-integral formulation with the
-    Muzny et al. (2013) / NIST density-dependent dense fluid residual correction:
-        μ(T, P) = μ₀(T) + c₁·ρ + c₂·ρ²
-    Matches NIST reference data (CoolProp HEOS) within <1.5% across 250–450 K and 1–350 bar.
+    Combines the dilute-gas Chapman-Enskog collision-integral formulation with a
+    density-dependent dense-fluid residual fitted to Muzny et al. (2013) / CoolProp:
+        μ(T, P) = s₀·μ₀(T) + c₁·ρ + c₂·ρ²
+    Matches CoolProp 8.0.0 within 0.5 % across 250–450 K and 1–350 bar (Peneloux density).
     """
     if isinstance(eos, PengRobinsonMixture) and not eos.is_pure_h2():
         return eos.viscosity(P, T, rho=rho)
@@ -358,7 +360,7 @@ def viscosity_h2(
         rho_val = max(float(rho), 0.0)
 
     delta_mu = _MU_RESIDUAL_C1 * rho_val + _MU_RESIDUAL_C2 * (rho_val**2)
-    mu = mu0 + delta_mu
+    mu = _MU_DILUTE_SCALE * mu0 + delta_mu
     return float(min(max(mu, 6.0e-6), 3.0e-5))
 
 

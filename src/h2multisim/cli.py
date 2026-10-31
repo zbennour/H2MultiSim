@@ -103,6 +103,8 @@ def _run_0d(args: argparse.Namespace) -> int:
     dt_s = (args.dt_days or 1.0) * 86400.0
     result = model.run_schedule(s0, sched, dt_s=dt_s, collect_time_series=True)
     m = result.metrics
+    args._metrics = dict(m)
+    args._scenario = scenario
 
     print(f"  Max Operating Pressure : {pa_to_bar(m['max_pressure_Pa']):.2f} bar")
     print(f"  Min Operating Pressure : {pa_to_bar(m['min_pressure_Pa']):.2f} bar")
@@ -135,6 +137,7 @@ def _run_0d(args: argparse.Namespace) -> int:
             area_std=props.area * 0.1,
         )
         mc_stats = run_monte_carlo(props, sched, mc_cfg, dt_days=args.dt_days or 1.0)
+        args._mc_stats = mc_stats
         wg = mc_stats["working_gas_kg"]
         print(
             f"  Working Gas P10: {wg['p10'] / 1e3:.2f} t | P50: {wg['p50'] / 1e3:.2f} t | P90: {wg['p90'] / 1e3:.2f} t"
@@ -169,6 +172,8 @@ def _run_1d(args: argparse.Namespace) -> int:
     model = UHSRadial1D(props, N=40)
     result = model.run_schedule(sched, dt_days=dt_days)
     m = result.metrics
+    args._metrics = dict(m)
+    args._scenario = scenario
 
     print(f"  Grid Cells (logarithmic) : {model.N}")
     print(f"  Initial Pressure         : {pa_to_bar(props.P_init):.2f} bar")
@@ -214,6 +219,8 @@ def _run_2d(args: argparse.Namespace) -> int:
     model = UHSAreal2D(props, wells)
     result = model.run_schedule(sched, dt_days=dt_days)
     m = result.metrics
+    args._metrics = dict(m)
+    args._scenario = scenario
 
     print(
         f"  Domain Grid              : {props.nx} x {props.ny} cells ({props.Lx:.0f}m x {props.Ly:.0f}m)"
@@ -263,6 +270,8 @@ def _run_3d(args: argparse.Namespace) -> int:
     model = UHSFieldScale3D(props, wells)
     result = model.run_schedule(sched, dt_days=dt_days, verbose=False)
     m = result.metrics
+    args._metrics = dict(m)
+    args._scenario = scenario
 
     print(
         f"  Domain Grid              : {props.nx} x {props.ny} x {props.nz} ({props.nx * props.ny * props.nz} total cells)"
@@ -376,6 +385,51 @@ def _run_export_deck(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_verify(_args: argparse.Namespace) -> int:
+    from h2multisim.verify import format_report, run_checks
+
+    checks = run_checks()
+    print(format_report(checks))
+    return 0 if all(c.passed for c in checks) else 1
+
+
+def _write_json(args: argparse.Namespace, scale: str) -> None:
+    """Write ``args._metrics`` (and Monte Carlo statistics) as JSON to a file or stdout."""
+    import json
+
+    payload = {
+        "h2multisim_version": __version__,
+        "scale": scale,
+        "scenario": getattr(args, "_scenario", None),
+        "metrics": getattr(args, "_metrics", {}),
+    }
+    if getattr(args, "_mc_stats", None) is not None:
+        payload["monte_carlo"] = args._mc_stats
+    text = json.dumps(payload, indent=2, sort_keys=True)
+    if args.json == "-":
+        sys.stdout.write(text + "\n")
+    else:
+        Path(args.json).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.json).write_text(text + "\n", encoding="utf-8")
+
+
+def _run_scale(args: argparse.Namespace, scale: str) -> int:
+    """Run one tier, honouring --quiet and --json."""
+    import contextlib
+    import io
+
+    runner = {"0d": _run_0d, "1d": _run_1d, "2d": _run_2d, "3d": _run_3d}[scale]
+    quiet = args.quiet or args.json == "-"
+    if quiet:
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = runner(args)
+    else:
+        code = runner(args)
+    if code == 0 and args.json:
+        _write_json(args, scale)
+    return code
+
+
 def _run_tests(_args: argparse.Namespace) -> int:
     print("\n=======================================================")
     print(f"  Running H2MultiSim™ Test Suite ({__version__})")
@@ -440,6 +494,22 @@ def main() -> None:
     run_parser.add_argument(
         "--config", type=str, default=None, help="Path to a JSON/YAML run configuration file"
     )
+    run_parser.add_argument(
+        "--json",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Write run metrics as JSON to PATH ('-' for stdout; implies --quiet)",
+    )
+    run_parser.add_argument(
+        "--quiet", action="store_true", help="Suppress the human-readable report"
+    )
+
+    # verify command
+    subparsers.add_parser(
+        "verify",
+        help="Check the thermodynamic core against embedded CoolProp reference values",
+    )
 
     # test command
     subparsers.add_parser("test", help="Execute the validation benchmark test suite")
@@ -484,6 +554,8 @@ def main() -> None:
 
     if args.command == "test":
         sys.exit(_run_tests(args))
+    elif args.command == "verify":
+        sys.exit(_run_verify(args))
     elif args.command == "export-deck":
         sys.exit(_run_export_deck(args))
     elif args.command == "run":
@@ -504,25 +576,12 @@ def main() -> None:
                 args.out_dir = out_dir
             if args.dt_days is None:
                 args.dt_days = dt_days
-            if scale == "0d":
-                sys.exit(_run_0d(args))
-            elif scale == "1d":
-                sys.exit(_run_1d(args))
-            elif scale == "2d":
-                sys.exit(_run_2d(args))
-            elif scale == "3d":
-                sys.exit(_run_3d(args))
+            sys.exit(_run_scale(args, scale))
         elif not args.scale:
             print("Error: --scale is required unless --config is given", file=sys.stderr)
             sys.exit(2)
-        elif args.scale == "0d":
-            sys.exit(_run_0d(args))
-        elif args.scale == "1d":
-            sys.exit(_run_1d(args))
-        elif args.scale == "2d":
-            sys.exit(_run_2d(args))
-        elif args.scale == "3d":
-            sys.exit(_run_3d(args))
+        else:
+            sys.exit(_run_scale(args, args.scale))
 
 
 if __name__ == "__main__":

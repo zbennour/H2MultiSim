@@ -32,28 +32,31 @@ To guarantee industrial rigor while maintaining **zero external runtime dependen
 
 ## 2. Tier 1: Thermodynamic & Transport Verification (vs NIST / CoolProp 8.0.0)
 
-H2MultiSim's analytical Peng-Robinson cubic equation of state (`PengRobinsonH2`) with Peneloux volume translation and Muzny et al. (2013) residual viscosity was verified against **CoolProp 8.0.0**, which evaluates the international reference standard Helmholtz Energy Equation of State (HEOS) of Leachman et al. (2009) for normal hydrogen.
+H2MultiSim's analytical Peng-Robinson cubic equation of state (`PengRobinsonH2`) with Peneloux volume translation and a dense-fluid viscosity residual fitted to Muzny et al. (2013) was verified against **CoolProp 8.0.0**, which evaluates the international reference standard Helmholtz Energy Equation of State (HEOS) of Leachman et al. (2009) for normal hydrogen.
 
 ### Benchmark Results (Reproducible via `audit/bench_thermo.py`)
 
-| Quantity | Temperature | Pressure | CoolProp 8.0.0 (Leachman) | H2MultiSim (PR + Peneloux) | Relative Error | Status |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Z-factor** | $293.15\text{ K}$ | $1.0\text{ bar}$ | $1.00059$ | $1.00027$ | $0.03\%$ | **PASS** |
-| **Z-factor** | $293.15\text{ K}$ | $50.0\text{ bar}$ | $1.03058$ | $1.02678$ | $0.37\%$ | **PASS** |
-| **Z-factor** | $293.15\text{ K}$ | $100.0\text{ bar}$ | $1.06305$ | $1.05436$ | $0.82\%$ | **PASS** |
-| **Z-factor** | $293.15\text{ K}$ | $200.0\text{ bar}$ | $1.13284$ | $1.11216$ | $1.83\%$ | **PASS** |
-| **Z-factor** | $316.00\text{ K}$ | $80.0\text{ bar}$ | $1.04705$ | $1.04169$ | $0.51\%$ | **PASS** |
-| **Z-factor** | $373.15\text{ K}$ | $100.0\text{ bar}$ | $1.04873$ | $1.04261$ | $0.58\%$ | **PASS** |
-| **Density** | $293.15\text{ K}$ | $100.0\text{ bar}$ | $7.785\text{ kg/m}^3$ | $7.849\text{ kg/m}^3$ | $0.82\%$ | **PASS** |
-| **Density** | $316.00\text{ K}$ | $80.0\text{ bar}$ | $5.811\text{ kg/m}^3$ | $5.841\text{ kg/m}^3$ | $0.51\%$ | **PASS** |
-| **Viscosity $\mu$** | $293.15\text{ K}$ | $1.0\text{ bar}$ | $8.86\times 10^{-6}\text{ Pa}\cdot\text{s}$ | $8.86\times 10^{-6}\text{ Pa}\cdot\text{s}$ | $<0.05\%$ | **PASS** |
-| **Viscosity $\mu$** | $293.15\text{ K}$ | $100.0\text{ bar}$ | $9.32\times 10^{-6}\text{ Pa}\cdot\text{s}$ | $9.21\times 10^{-6}\text{ Pa}\cdot\text{s}$ | $1.18\%$ | **PASS** |
-| **Viscosity $\mu$** | $373.15\text{ K}$ | $100.0\text{ bar}$ | $1.06\times 10^{-5}\text{ Pa}\cdot\text{s}$ | $1.07\times 10^{-5}\text{ Pa}\cdot\text{s}$ | $0.94\%$ | **PASS** |
-| **Heat Capacity $c_p$** | $293.15\text{ K}$ | $100.0\text{ bar}$ | $14.61\text{ kJ/(kg}\cdot\text{K)}$ | $14.54\text{ kJ/(kg}\cdot\text{K)}$ | $0.48\%$ | **PASS** |
-| **Joule–Thomson $\mu_{\text{JT}}$**| $293.15\text{ K}$ | $100.0\text{ bar}$ | $-1.62\times 10^{-6}\text{ K/Pa}$ | $-1.69\times 10^{-6}\text{ K/Pa}$ | $4.32\%$ | **PASS** |
+| Quantity | Temperature | Pressure | CoolProp 8.0.0 (Leachman) | H2MultiSim (PR + Peneloux) | Relative Error |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Z-factor** | $293.15\text{ K}$ | $1.0\text{ bar}$ | $1.00059$ | $1.00044$ | $0.02\%$ |
+| **Z-factor** | $293.15\text{ K}$ | $50.0\text{ bar}$ | $1.02999$ | $1.02402$ | $0.58\%$ |
+| **Z-factor** | $293.15\text{ K}$ | $100.0\text{ bar}$ | $1.06081$ | $1.05178$ | $0.85\%$ |
+| **Z-factor** | $293.15\text{ K}$ | $200.0\text{ bar}$ | $1.12473$ | $1.11554$ | $0.82\%$ |
+| **Z-factor** | $316.00\text{ K}$ | $80.0\text{ bar}$ | $1.04594$ | $1.03907$ | $0.66\%$ |
+| **Z-factor** | $373.15\text{ K}$ | $100.0\text{ bar}$ | $1.05072$ | $1.04574$ | $0.47\%$ |
+| **Density** | $293.15\text{ K}$ | $100.0\text{ bar}$ | $7.797\text{ kg/m}^3$ | $7.864\text{ kg/m}^3$ | $0.86\%$ |
+| **Density** | $316.00\text{ K}$ | $80.0\text{ bar}$ | $5.868\text{ kg/m}^3$ | $5.907\text{ kg/m}^3$ | $0.66\%$ |
+| **Viscosity $\mu$** | $293.15\text{ K}$ | $1.0\text{ bar}$ | $8.797\ \mu\text{Pa·s}$ | $8.824\ \mu\text{Pa·s}$ | $0.31\%$ |
+| **Viscosity $\mu$** | $293.15\text{ K}$ | $100.0\text{ bar}$ | $8.922\ \mu\text{Pa·s}$ | $8.932\ \mu\text{Pa·s}$ | $0.10\%$ |
+| **Viscosity $\mu$** | $373.15\text{ K}$ | $100.0\text{ bar}$ | $10.464\ \mu\text{Pa·s}$ | $10.474\ \mu\text{Pa·s}$ | $0.10\%$ |
+| **Viscosity $\mu$** | $293.15\text{ K}$ | $300.0\text{ bar}$ | $9.462\ \mu\text{Pa·s}$ | $9.476\ \mu\text{Pa·s}$ | $0.15\%$ |
+| **Heat capacity $c_p$** | $293.15\text{ K}$ | $100.0\text{ bar}$ | $14.535\text{ kJ/(kg·K)}$ | $14.567\text{ kJ/(kg·K)}$ | $0.22\%$ |
+| **Joule–Thomson $\mu_{\text{JT}}$** | $293.15\text{ K}$ | $100.0\text{ bar}$ | $-0.0347\text{ K/bar}$ | $-0.0325\text{ K/bar}$ | $6.28\%$ |
+
+Regenerated for v1.8.0. `h2multisim verify` re-checks 64 such points against embedded CoolProp references and exits non-zero if any exceeds its tolerance.
 
 > [!NOTE]
-> Across typical UHS porous formation conditions ($T = 300\text{–}350\text{ K}, P = 50\text{–}150\text{ bar}$), H2MultiSim's Peneloux-translated Peng-Robinson EOS achieves **$<0.6\%$ error on $Z$-factor and density**, and **$<1.2\%$ error on dynamic viscosity** compared to reference Leachman (2009) data.
+> Across 280–450 K and 1–350 bar, H2MultiSim's Peneloux-translated Peng-Robinson EOS is within **1.0 % on $Z$-factor and density** (1.25 % at 250–280 K) and **0.5 % on dynamic viscosity** compared to the reference Leachman (2009) EOS.
 
 ---
 
@@ -139,17 +142,17 @@ OPM Flow has no single-phase gas mode (decks declaring only `GAS` stop with *"No
 - Producer rate caps go to the `WCONPROD` GRAT item; a `SUMMARY` section requests `FPR`, `FGIP`, `FGIT`, `FGPT`, `WBHP`, `WGIR`, `WGPR`.
 - The decks are isothermal; H2MultiSim's adiabatic/relaxation thermal model has no deck counterpart.
 
-### Cross-simulator results (OPM Flow 2026.04, reproducible via `audit/bench_opm.py`)
+### Cross-simulator results (OPM Flow 2026.04, H2MultiSim v1.8.0, reproducible via `audit/bench_opm.py`)
 
 Each canonical scenario is exported, run in OPM Flow with its time step capped at H2MultiSim's $\Delta t$, and compared at every OPM report time. "dGIP" is the error in the change of gas in place (OPM: cumulative injection − production), normalised by the largest inventory swing; "P" is the error in pore-volume-average pressure (`FPR`, uniform Cartesian grids only).
 
 | Scenario | H2MultiSim isothermal: max dGIP err | max P err | H2MultiSim thermal: max dGIP err | max P err |
 | :--- | ---: | ---: | ---: | ---: |
-| 1D Okoroafor (radial, 40 cells) | **0.39 %** | – | 12.7 % | – |
-| 2D single well (15×15) | **0.72 %** | **0.011 %** | 6.4 % | 0.36 % |
-| 2D five-spot (15×15) | **1.18 %** | **0.052 %** | 8.6 % | 0.52 % |
-| 3D gravity override (8×8×5) | **0.17 %** | **0.000 %** | 2.8 % | 0.15 % |
-| 3D layered reservoir (8×8×5) | **0.51 %** | **0.033 %** | 7.0 % | 1.53 % |
+| 1D Okoroafor (radial, 40 cells) | **0.40 %** | – | 12.7 % | – |
+| 2D single well (15×15) | **0.71 %** | **0.010 %** | 6.3 % | 0.35 % |
+| 2D five-spot (15×15) | **1.18 %** | **0.052 %** | 8.6 % | 0.51 % |
+| 3D gravity override (8×8×5) | **0.19 %** | **0.001 %** | 2.9 % | 0.14 % |
+| 3D layered reservoir (8×8×5) | **0.49 %** | **0.032 %** | 7.0 % | 1.52 % |
 
 With matched physics (isothermal) the two simulators agree to ≤ 1.2 % in stored-gas change and ≤ 0.05 % in average pressure. The "thermal" columns are not errors: they measure how much H2MultiSim's compression heating / expansion cooling changes deliverability relative to an isothermal simulator. With OPM's default adaptive stepping (steps up to tens of days), the isothermal dGIP gap grows to 1–9 %, which is OPM's own time-discretisation error on these fast transients.
 
@@ -200,7 +203,7 @@ All benchmark criteria are embedded directly into H2MultiSim's automated test su
 | `test_02` | `test_02_eos_density_okoroafor` | Okoroafor (2022) | Density error $< 1.5\%$ at $40\text{–}100\text{ bar}$ |
 | `test_05` | `test_05_viscosity_benchmarks` | Muzny / NIST (2013) | Dense gas viscosity error $< 2.0\%$ |
 | `test_07` | `test_07_joule_thomson` | CoolProp 8.0.0 | Negative $\mu_{\text{JT}}$ within $< 5.0\%$ |
-| `test_32` | `test_32_peneloux_translation` | CoolProp 8.0.0 | Peneloux $Z(P)$ error $< 0.85\%$ ($1\text{–}350\text{ bar}$) |
+| `test_32` | `test_32_peneloux_translation` | CoolProp 8.0.0 | Peneloux $Z(P)$ error $\le 1.0\%$ ($1\text{–}350\text{ bar}$, 280–450 K) |
 | `test_38` | `test_38_analytical_real_gas_pseudopressure` | Al-Hussainy et al. (1966) | Flowing BHP error $< 0.50\%$, spatial profile $< 0.25\%$ |
 | `test_39` | `test_39_eclipse_deck_export` | OPM Flow / ECLIPSE | Monotonic $B_g$, valid keyword structures across 1D/2D/3D |
 
