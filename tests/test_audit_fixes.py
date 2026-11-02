@@ -747,6 +747,26 @@ class TestConvergenceFlags(unittest.TestCase):
         for key in ("sor_unconverged_solves", "active_set_unconverged_steps", "converged"):
             self.assertIn(key, res.metrics)
 
+    def test_cli_verify_non_utf8_stdout(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        env = dict(os.environ)
+        env["PYTHONUTF8"] = "0"
+        env["PYTHONIOENCODING"] = "cp1252"
+        proc = subprocess.run(
+            [sys.executable, "-m", "h2multisim.cli", "verify"],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertIn("64/64 checks passed", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

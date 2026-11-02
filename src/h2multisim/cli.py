@@ -466,6 +466,14 @@ def _run_tests(_args: argparse.Namespace) -> int:
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
     parser = argparse.ArgumentParser(
         prog="h2multisim",
         description="H2MultiSim™ — Multi-Scale Underground Hydrogen Storage (UHS) Simulator",
