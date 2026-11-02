@@ -5,7 +5,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![Lint: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Tests: 96/96 Passed](https://img.shields.io/badge/tests-96%2F96%20passed-brightgreen.svg)](tests/)
+[![Tests: 98/98 Passed](https://img.shields.io/badge/tests-98%2F98%20passed-brightgreen.svg)](tests/)
 
 H2MultiSim™ is an open-source, dependency-free Python toolkit designed for researchers, subsurface reservoir engineers, and students to model underground hydrogen storage across four dimensional scales:
 
@@ -49,6 +49,7 @@ transfer or regulatory reporting.
 > For the complete quantitative benchmark report across all three tiers (**Tier 1: NIST/CoolProp 8.0.0**, **Tier 2: Al-Hussainy (1966) analytical pseudopressure**, and **Tier 3: OPM Flow & ECLIPSE cross-simulator decks**), see [BENCHMARKS.md](BENCHMARKS.md).
 >
 > What each tier does **not** model, and the validated accuracy envelope, are listed in [LIMITATIONS.md](LIMITATIONS.md).
+> The changes made after the v1.3.0 audit, and the reasoning behind each, are summarised in [REMEDIATION_NOTES.md](REMEDIATION_NOTES.md).
 
 | Metric | Condition | Reference (CoolProp) | H2MultiSim™ | Error |
 | :--- | :--- | :--- | :--- | :--- |
@@ -208,7 +209,7 @@ H2MultiSim/
 │   └── bench_analytical_1d.py  # Al-Hussainy real-gas pseudopressure radial line-source benchmark
 ├── src/
 │   └── h2multisim/
-│       ├── __init__.py         # Public API and package version (1.10.0)
+│       ├── __init__.py         # Public API and package version (1.11.0)
 │       ├── __main__.py         # Module execution entrypoint
 │       ├── cli.py              # Unified CLI (run, export-deck, test)
 │       ├── config.py           # JSON/YAML run configuration loader

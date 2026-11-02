@@ -47,11 +47,13 @@ from h2multisim.thermo import (
     PoreVolumeModel,
     RelativePermeabilityModel,
     adiabatic_temperature,
+    compression_work_mass,
     coupled_temperature_update,
     cp_ideal_h2,
     cp_real_h2,
     cp_specific_real_h2,
     enthalpy_molar,
+    entropy_molar,
     gamma_real_h2,
     heating_values_mass,
     internal_energy_molar,
@@ -86,7 +88,7 @@ from h2multisim.units import (
     tonnes_to_kg,
 )
 
-__version__ = "1.10.0"
+__version__ = "1.11.0"
 __all__ = [
     "__version__",
     # Main multi-scale simulators
@@ -132,8 +134,10 @@ __all__ = [
     "thermal_relaxation_update",
     "coupled_temperature_update",
     "cp_ideal_h2",
+    "compression_work_mass",
     "cp_real_h2",
     "enthalpy_molar",
+    "entropy_molar",
     "internal_energy_molar",
     "isentropic_exponent",
     "cp_specific_real_h2",

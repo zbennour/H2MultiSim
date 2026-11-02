@@ -19,6 +19,7 @@ This page states what H2MultiSim models, what it does not, and the measured accu
 - **Heat transport in grid tiers.** 1D/2D/3D apply an isentropic temperature change per cell, diluted by the rock and connate-water heat capacity (local thermal equilibrium), plus relaxation to geothermal temperature. There is no heat advection with the flowing gas and no injected-gas temperature, so near-well cooling or heating fronts from injecting gas at a different temperature are not represented.
 - **Wells.** Vertical wells with a Peaceman index (isotropic). No wellbore hydraulics, friction, tubing head pressure, or wellbore hydrostatic head between 3D perforations (a BHP-controlled 3D well applies the same BHP to every perforated layer).
 - **Anisotropy.** 3D permeability is isotropic (`k_v = k_h`).
+- **Surface facilities.** 0D compression energy assumes intercooled multi-stage compression from `supply_pressure` straight to the bottom-hole pressure; there is no wellbore hydrostatic head, tubing friction, or aftercooler/dryer energy, and grid tiers report no compression energy.
 - **Adsorption energy.** Sorbent stores use the lumped thermal model; heat of adsorption and adsorbed-phase energy are not modelled.
 
 ## Numerics

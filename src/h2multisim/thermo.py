@@ -448,6 +448,121 @@ def internal_energy_molar(
     return enthalpy_molar(T_val, P_val, eos) - eos.z_factor(P_val, T_val) * R_UNIVERSAL * T_val
 
 
+def _shomate_h2_entropy(T: float) -> float:
+    """Closed-form ∫ Cp°_H2/T dT of the NIST Shomate fit [J/(mol·K)] (arbitrary origin)."""
+    t = T / 1000.0
+    return (
+        33.066178 * math.log(t)
+        - 11.363417 * t
+        + 11.432816 * t**2 / 2.0
+        - 2.772874 * t**3 / 3.0
+        + 0.158558 / (2.0 * t**2)
+    )
+
+
+def entropy_molar(
+    T: float, P: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None
+) -> float:
+    """
+    Real-gas molar entropy S(T, P) [J/(mol·K)] relative to the ideal gas at 298.15 K, 1 bar
+    (fixed composition, so the mixing term is omitted):
+
+        S = ∫Cp°/T dT − R·ln(P/P₀) + R·ln(Z_PR − B) + a'/(2√2·b)·ln[(Z_PR + (1+√2)B)/(Z_PR + (1−√2)B)]
+
+    A constant volume translation leaves the entropy departure unchanged.
+    """
+    if eos is None:
+        eos = PengRobinsonH2()
+    T_val = max(float(T), 50.0)
+    P_val = max(float(P), 1.0)
+    s_ig = _shomate_h2_entropy(T_val) - _shomate_h2_entropy(_H_REF_T)
+    if isinstance(eos, PengRobinsonMixture):
+        s_ig_h2 = s_ig
+        s_ig = 0.0
+        for sp, y in eos.composition.items():
+            if sp == "H2":
+                s_ig += y * s_ig_h2
+            else:
+                c298 = GAS_COMPONENTS[sp].cp_ideal_298
+                # cp = c298·(1 + 0.00045·(T − 298.15))
+                s_ig += (
+                    y
+                    * c298
+                    * (
+                        (1.0 - 0.00045 * _H_REF_T) * math.log(T_val / _H_REF_T)
+                        + 0.00045 * (T_val - _H_REF_T)
+                    )
+                )
+    s_ig -= R_UNIVERSAL * math.log(P_val / 1.0e5)
+    c = eos.volume_translation
+    Z_pr = eos.z_factor(P_val, T_val) + c * P_val / (R_UNIVERSAL * T_val)
+    b = eos.b
+    B = b * P_val / (R_UNIVERSAL * T_val)
+    dT = max(T_val * 1e-4, 0.01)
+    da_dT = eos.ac * (eos._alpha(T_val + dT) - eos._alpha(T_val - dT)) / (2.0 * dT)
+    s2 = math.sqrt(2.0)
+    num = Z_pr + (1.0 + s2) * B
+    den = Z_pr + (1.0 - s2) * B
+    log_term = math.log(num / den) if den > 0.0 and num / den > 0.0 else 0.0
+    s_res = R_UNIVERSAL * math.log(max(Z_pr - B, 1e-12)) + da_dT / (2.0 * s2 * b) * log_term
+    return s_ig + s_res
+
+
+def isentropic_outlet_temperature(
+    T_in: float, P_in: float, P_out: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None
+) -> float:
+    """Temperature [K] after isentropic compression/expansion, solving S(T, P_out) = S(T_in, P_in)."""
+    if eos is None:
+        eos = PengRobinsonH2()
+    s_target = entropy_molar(T_in, P_in, eos)
+    T = adiabatic_temperature(T_in, P_in, P_out, eos)  # one-point estimate as the start
+    for _ in range(30):
+        f = entropy_molar(T, P_out, eos) - s_target
+        dT = max(T * 1e-5, 1e-3)
+        slope = (entropy_molar(T + dT, P_out, eos) - entropy_molar(T - dT, P_out, eos)) / (2 * dT)
+        if slope <= 0.0:
+            break
+        step = f / slope
+        T -= step
+        if abs(step) < 1e-7:
+            break
+    return T
+
+
+def compression_work_mass(
+    P_in: float,
+    P_out: float,
+    T_in: float,
+    eos: PengRobinsonH2 | PengRobinsonMixture | None = None,
+    efficiency: float = 0.75,
+    max_stage_ratio: float = 3.0,
+) -> float:
+    """
+    Shaft work [J/kg] to compress gas from (P_in, T_in) to P_out in equal-ratio stages
+    (ratio ≤ ``max_stage_ratio``) with intercooling back to T_in between stages:
+
+        w = Σ_stages [h(T_s, P_b) − h(T_in, P_a)] / η,   S(T_s, P_b) = S(T_in, P_a)
+
+    Returns 0 when no compression is needed (P_out ≤ P_in).
+    """
+    if eos is None:
+        eos = PengRobinsonH2()
+    if P_out <= P_in or efficiency <= 0.0:
+        return 0.0
+    ratio = P_out / P_in
+    n_stages = max(1, math.ceil(math.log(ratio) / math.log(max(max_stage_ratio, 1.0001)) - 1e-12))
+    r = ratio ** (1.0 / n_stages)
+    M = eos.molar_mass() if isinstance(eos, PengRobinsonMixture) else M_H2
+    w_molar = 0.0
+    P_a = P_in
+    for _ in range(n_stages):
+        P_b = P_a * r
+        T_s = isentropic_outlet_temperature(T_in, P_a, P_b, eos)
+        w_molar += enthalpy_molar(T_s, P_b, eos) - enthalpy_molar(T_in, P_a, eos)
+        P_a = P_b
+    return w_molar / M / efficiency
+
+
 # ── Joule-Thomson coefficient ────────────────────────────────────────────────
 def joule_thomson_coefficient(
     T: float, P: float, eos: PengRobinsonH2 | PengRobinsonMixture | None = None

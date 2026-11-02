@@ -454,6 +454,40 @@ class TestRockHeatCapacity(unittest.TestCase):
         self.assertLess(m["max_T_C"] - m["min_T_C"], 1.0)
 
 
+class TestCompressionEnergy(unittest.TestCase):
+    def test_isentropic_outlet_and_work_vs_coolprop(self) -> None:
+        from h2multisim.thermo import compression_work_mass, isentropic_outlet_temperature
+
+        eos = PengRobinsonH2(peneloux=True)
+        # CoolProp 8.0.0, H2 from 303.15 K: (P_in, P_out [bar], T_out [K], isentropic Δh [kJ/kg])
+        for P1, P2, T_ref, w_ref in ((30.0, 90.0, 415.05, 1660.8), (30.0, 60.0, 369.78, 981.7)):
+            with self.subTest(P1=P1, P2=P2):
+                T2 = isentropic_outlet_temperature(303.15, P1 * 1e5, P2 * 1e5, eos)
+                self.assertLess(abs(T2 - T_ref), 1.5)
+                w = compression_work_mass(
+                    P1 * 1e5, P2 * 1e5, 303.15, eos, efficiency=1.0, max_stage_ratio=10.0
+                )
+                self.assertLess(abs(w / 1e3 / w_ref - 1.0), 0.01)
+        self.assertEqual(compression_work_mass(50e5, 40e5, 303.15, eos), 0.0)
+        # Intercooled staging reduces work versus a single stage.
+        single = compression_work_mass(30e5, 270e5, 303.15, eos, max_stage_ratio=10.0)
+        staged = compression_work_mass(30e5, 270e5, 303.15, eos, max_stage_ratio=3.0)
+        self.assertLess(staged, single)
+
+    def test_0d_compression_metric(self) -> None:
+        props = build_teesside_cavern()
+        model = UHSReservoir0D(props)
+        P0, T0 = props.reference_pressure, props.reference_temperature
+        sched = [SchedulePeriod("inj", "inject", 1.0, bar_to_pa(120.0), 15.0)]
+        m = model.run_schedule(
+            ReservoirState(P0, T0, model.mass_from_state(P0, T0)), sched, 86400.0
+        ).metrics
+        self.assertGreater(m["compression_energy_GWh"], 0.0)
+        # 30 -> 40..120 bar for H2 costs ~1-3 % of its LHV.
+        self.assertGreater(m["compression_energy_pct_of_injected_LHV"], 0.5)
+        self.assertLess(m["compression_energy_pct_of_injected_LHV"], 3.5)
+
+
 class TestModeValidation(unittest.TestCase):
     def test_unknown_modes_rejected(self) -> None:
         with self.assertRaises(ValueError):

@@ -121,6 +121,10 @@ def _run_0d(args: argparse.Namespace) -> int:
     print(f"  Total Injected         : {m['total_injected_kg'] / 1e3:.2f} tonnes")
     print(f"  Total Withdrawn        : {m['total_withdrawn_kg'] / 1e3:.2f} tonnes")
     print(f"  Withdrawn Energy       : {m['total_withdrawn_energy_GWh_LHV']:.2f} GWh (LHV)")
+    print(
+        f"  Compression Energy     : {m['compression_energy_GWh']:.2f} GWh "
+        f"({m['compression_energy_pct_of_injected_LHV']:.2f} % of injected LHV)"
+    )
 
     csv_path = os.path.join(out_dir, f"0d_{scenario}_timeseries.csv")
     export_timeseries_csv(result, csv_path)
